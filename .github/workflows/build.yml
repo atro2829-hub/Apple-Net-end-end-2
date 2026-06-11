@@ -33,10 +33,13 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bun install
 
       - name: Generate Prisma client
         run: bunx prisma generate
+
+      - name: Create Firebase Admin SDK file
+        run: echo '${{ secrets.FIREBASE_ADMIN_SDK }}' > firebase-admin-sdk.json
 
       - name: Build Next.js (User App)
         run: bun run build
@@ -83,7 +86,10 @@ jobs:
           npm install -g @capacitor/cli
           bun install
 
-      - name: Build Next.js static export
+      - name: Create Firebase Admin SDK file
+        run: echo '${{ secrets.FIREBASE_ADMIN_SDK }}' > firebase-admin-sdk.json
+
+      - name: Build Next.js static export (User)
         run: |
           # Temporarily add output: "export" for static build
           sed -i 's/const nextConfig: NextConfig = {/const nextConfig: NextConfig = {\n  output: "export",/' next.config.ts
@@ -144,6 +150,9 @@ jobs:
         run: |
           npm install -g @capacitor/cli
           bun install
+
+      - name: Create Firebase Admin SDK file
+        run: echo '${{ secrets.FIREBASE_ADMIN_SDK }}' > firebase-admin-sdk.json
 
       - name: Build Next.js static export (Admin)
         run: |
