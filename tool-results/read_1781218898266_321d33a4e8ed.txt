@@ -1,0 +1,674 @@
+     1→"use client";
+     2→
+     3→import React, { useState, useEffect, useCallback, useRef } from "react";
+     4→import { motion, AnimatePresence } from "framer-motion";
+     5→import {
+     6→  ShoppingBag, Wifi, CreditCard, Building2, Smartphone, Megaphone, Download,
+     7→  Zap, MapPin, Phone, ChevronLeft, Globe, RefreshCw, Wallet, ArrowDown,
+     8→  TrendingUp, Star, Navigation, Clock, Satellite, Package, Search
+     9→} from "lucide-react";
+    10→import { db } from "@/lib/firebase";
+    11→import { ref, onValue, get } from "firebase/database";
+    12→import { NETWORKS as DEFAULT_NETWORKS, PROVINCES, getDistricts, getDistrictsEn } from "@/lib/constants";
+    13→import { Button } from "@/components/ui/button";
+    14→import { Input } from "@/components/ui/input";
+    15→import { Badge } from "@/components/ui/badge";
+    16→import { NetworkDetailModal } from "@/components/NetworkDetailModal";
+    17→import type { Advertisement, SimCard, NetworkItem, CardItem } from "@/lib/types";
+    18→import type { User } from "firebase/auth";
+    19→import { useLanguage } from "@/context/LanguageContext";
+    20→
+    21→interface HomePageProps {
+    22→  user: User | null;
+    23→  isAdmin: boolean;
+    24→  onAuthClick: () => void;
+    25→  onNavigate: (tab: string) => void;
+    26→}
+    27→
+    28→interface HomeBanner {
+    29→  id: string;
+    30→  title: string;
+    31→  description: string;
+    32→  imageUrl: string;
+    33→  linkUrl?: string;
+    34→  isActive: boolean;
+    35→  order: number;
+    36→  createdAt: number;
+    37→}
+    38→
+    39→export function HomePage({ user, isAdmin, onAuthClick, onNavigate }: HomePageProps) {
+    40→  const { t, isRTL, lang } = useLanguage();
+    41→
+    42→  const [ads, setAds] = useState<Advertisement[]>([]);
+    43→  const [homeBanners, setHomeBanners] = useState<HomeBanner[]>([]);
+    44→  const [simCards, setSimCards] = useState<SimCard[]>([]);
+    45→  const [currentAd, setCurrentAd] = useState(0);
+    46→  const [currentBanner, setCurrentBanner] = useState(0);
+    47→  const [fbNetworks, setFbNetworks] = useState<NetworkItem[]>(DEFAULT_NETWORKS.map(n => ({
+    48→    ...n, ownerId: null, ownerName: null, ownerPhone: null, location: null,
+    49→    provinceId: null, provinceName: null, district: null, exactLocation: null,
+    50→    connectionIP: null, imageBase64: null, networkType: null, coverage: null, speed: null, createdAt: 0
+    51→  })));
+    52→  const [allCards, setAllCards] = useState<CardItem[]>([]);
+    53→  const [balance, setBalance] = useState(0);
+    54→  const [maxBalance, setMaxBalance] = useState(0);
+    55→  const [appDownloadUrl, setAppDownloadUrl] = useState("");
+    56→
+    57→  const [selectedProvince, setSelectedProvince] = useState<string | null>(null);
+    58→  const [selectedDistrict, setSelectedDistrict] = useState<string | null>(null);
+    59→  const [userProvinceId, setUserProvinceId] = useState<string | null>(null);
+    60→
+    61→  const [refreshing, setRefreshing] = useState(false);
+    62→  const [pullY, setPullY] = useState(0);
+    63→  const [isPulling, setIsPulling] = useState(false);
+    64→  const touchStartY = useRef(0);
+    65→  const scrollRef = useRef<HTMLDivElement>(null);
+    66→
+    67→  const [selectedNetwork, setSelectedNetwork] = useState<NetworkItem | null>(null);
+    68→  const [networkSearch, setNetworkSearch] = useState("");
+    69→
+    70→  useEffect(() => {
+    71→    const unsubs: (() => void)[] = [];
+    72→    const adsUnsub = onValue(ref(db, "advertisements"), (snap) => {
+    73→      const data = snap.val();
+    74→      if (data) setAds(Object.entries(data).map(([id, val]: [string, unknown]) => ({ id, ...(val as Record<string, unknown>) })).filter((a: Record<string, unknown>) => a.isActive) as Advertisement[]);
+    75→    });
+    76→    unsubs.push(adsUnsub);
+    77→    const bannersUnsub = onValue(ref(db, "homeBanners"), (snap) => {
+    78→      const data = snap.val();
+    79→      if (data) {
+    80→        const banners = Object.entries(data).map(([id, val]: [string, unknown]) => ({ id, ...(val as Record<string, unknown>) })).filter((b: Record<string, unknown>) => b.isActive).sort((a: Record<string, unknown>, b: Record<string, unknown>) => ((a.order as number) || 0) - ((b.order as number) || 0)) as HomeBanner[];
+    81→        setHomeBanners(banners);
+    82→      } else setHomeBanners([]);
+    83→    });
+    84→    unsubs.push(bannersUnsub);
+    85→    const simsUnsub = onValue(ref(db, "simCards"), (snap) => {
+    86→      const data = snap.val();
+    87→      if (data) setSimCards(Object.entries(data).map(([id, val]: [string, unknown]) => ({ id, ...(val as Record<string, unknown>) })).filter((s: Record<string, unknown>) => s.isAvailable) as SimCard[]);
+    88→    });
+    89→    unsubs.push(simsUnsub);
+    90→    const netUnsub = onValue(ref(db, "networks"), (snap) => {
+    91→      const data = snap.val();
+    92→      if (data) setFbNetworks(Object.entries(data).map(([id, val]: [string, unknown]) => ({ id, ...(val as Record<string, unknown>) })) as NetworkItem[]);
+    93→    });
+    94→    unsubs.push(netUnsub);
+    95→    const cardsUnsub = onValue(ref(db, "cards"), (snap) => {
+    96→      const data = snap.val();
+    97→      setAllCards(data ? Object.entries(data).map(([id, val]: [string, unknown]) => ({ id, ...(val as Record<string, unknown>) })) as CardItem[] : []);
+    98→    });
+    99→    unsubs.push(cardsUnsub);
+   100→    if (user) {
+   101→      unsubs.push(onValue(ref(db, `credit/${user.uid}/amount`), (snap) => setBalance(snap.val() || 0)));
+   102→      unsubs.push(onValue(ref(db, "settings/maxBalance"), (snap) => setMaxBalance(snap.val() || 0)));
+   103→      unsubs.push(onValue(ref(db, "settings/appDownloadUrl"), (snap) => { if (snap.val()) setAppDownloadUrl(snap.val()); }));
+   104→      get(ref(db, `users/${user.uid}/provinceId`)).then((snap) => {
+   105→        const provId = snap.val();
+   106→        if (provId) { setUserProvinceId(provId); setSelectedProvince(provId); }
+   107→      });
+   108→    }
+   109→    return () => unsubs.forEach(u => u());
+   110→  }, [user]);
+   111→
+   112→  useEffect(() => {
+   113→    if (homeBanners.length <= 1) return;
+   114→    const timer = setInterval(() => setCurrentBanner((prev) => (prev + 1) % homeBanners.length), 4000);
+   115→    return () => clearInterval(timer);
+   116→  }, [homeBanners.length]);
+   117→
+   118→  useEffect(() => {
+   119→    if (ads.length <= 1) return;
+   120→    const timer = setInterval(() => setCurrentAd((prev) => (prev + 1) % ads.length), 5000);
+   121→    return () => clearInterval(timer);
+   122→  }, [ads.length]);
+   123→
+   124→  const getAvailableCount = (networkId: string) => allCards.filter(c => c.network === networkId && !c.isUsed).length;
+   125→
+   126→  const vendingNetworks = fbNetworks.filter(net => {
+   127→    const available = getAvailableCount(net.id);
+   128→    if (available === 0) return false;
+   129→    if (selectedProvince && net.provinceId !== selectedProvince) return false;
+   130→    if (selectedDistrict && net.district !== selectedDistrict) return false;
+   131→    return true;
+   132→  }).sort((a, b) => {
+   133→    const aNear = a.provinceId === userProvinceId ? 1 : 0;
+   134→    const bNear = b.provinceId === userProvinceId ? 1 : 0;
+   135→    if (aNear !== bNear) return bNear - aNear;
+   136→    return getAvailableCount(b.id) - getAvailableCount(a.id);
+   137→  });
+   138→
+   139→  const filteredNetworks = fbNetworks.filter(net => {
+   140→    if (selectedProvince && net.provinceId !== selectedProvince) return false;
+   141→    if (selectedDistrict && net.district !== selectedDistrict) return false;
+   142→    if (networkSearch && !net.name.toLowerCase().includes(networkSearch.toLowerCase())) return false;
+   143→    return true;
+   144→  });
+   145→
+   146→  const districts = selectedProvince ? getDistricts(selectedProvince) : [];
+   147→  const districtsEn = selectedProvince ? getDistrictsEn(selectedProvince) : [];
+   148→
+   149→  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+   150→    const el = scrollRef.current;
+   151→    if (el && el.scrollTop <= 0) { touchStartY.current = e.touches[0].clientY; setIsPulling(true); }
+   152→  }, []);
+   153→  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+   154→    if (!isPulling) return;
+   155→    const el = scrollRef.current;
+   156→    if (el && el.scrollTop > 0) { setIsPulling(false); setPullY(0); return; }
+   157→    const diff = e.touches[0].clientY - touchStartY.current;
+   158→    if (diff > 0) setPullY(Math.min(diff * 0.4, 100));
+   159→  }, [isPulling]);
+   160→  const handleTouchEnd = useCallback(() => {
+   161→    if (pullY >= 60 && !refreshing) {
+   162→      setRefreshing(true);
+   163→      setTimeout(() => { setRefreshing(false); setPullY(0); setIsPulling(false); }, 1200);
+   164→    } else { setPullY(0); setIsPulling(false); }
+   165→  }, [pullY, refreshing]);
+   166→
+   167→  const activeBanners = homeBanners.length > 0 ? homeBanners : ads.length > 0 ? null : null;
+   168→
+   169→  return (
+   170→    <motion.div
+   171→      initial={{ opacity: 0, y: 16 }}
+   172→      animate={{ opacity: 1, y: 0 }}
+   173→      exit={{ opacity: 0, y: -16 }}
+   174→      transition={{ type: "spring", stiffness: 120, damping: 14 }}
+   175→      className="relative"
+   176→    >
+   177→      {/* Pull-to-refresh */}
+   178→      <motion.div
+   179→        className="flex items-center justify-center py-2 overflow-hidden"
+   180→        animate={{ height: pullY > 0 || refreshing ? (refreshing ? 44 : pullY * 0.5) : 0 }}
+   181→        transition={{ type: "spring", stiffness: 300, damping: 25 }}
+   182→      >
+   183→        <motion.div animate={{ rotate: refreshing ? 360 : 0 }} transition={{ repeat: refreshing ? Infinity : 0, duration: 0.8, ease: "linear" }}>
+   184→          <RefreshCw className={`w-5 h-5 ${refreshing ? "text-[#1B7A3D]" : "text-gray-300 dark:text-slate-600"}`} />
+   185→        </motion.div>
+   186→        {pullY > 30 && !refreshing && (
+   187→          <span className="text-[10px] text-gray-400 dark:text-slate-500 mx-2">
+   188→            <ArrowDown className="w-3 h-3 inline" /> {t("home.pullToRefresh")}
+   189→          </span>
+   190→        )}
+   191→        {refreshing && <span className="text-[10px] text-[#1B7A3D] mx-2 font-bold">{t("home.refreshing")}</span>}
+   192→      </motion.div>
+   193→
+   194→      <div
+   195→        ref={scrollRef}
+   196→        onTouchStart={handleTouchStart}
+   197→        onTouchMove={handleTouchMove}
+   198→        onTouchEnd={handleTouchEnd}
+   199→        className="px-4 pt-3 pb-6 space-y-4"
+   200→      >
+   201→
+   202→        {/* ══ 1. HERO BALANCE CARD ══ */}
+   203→        <motion.div
+   204→          initial={{ scale: 0.97, opacity: 0 }}
+   205→          animate={{ scale: 1, opacity: 1 }}
+   206→          transition={{ type: "spring", stiffness: 200, damping: 18, delay: 0.05 }}
+   207→          className="relative overflow-hidden rounded-3xl"
+   208→        >
+   209→          <div className="bg-gradient-to-br from-[#0d5c2e] via-[#1B7A3D] to-[#22A24D] rounded-3xl p-5 relative overflow-hidden">
+   210→            {/* Decorative blobs */}
+   211→            <div className="absolute -top-8 -right-8 w-32 h-32 bg-white/10 rounded-full blur-xl" />
+   212→            <div className="absolute -bottom-8 -left-8 w-40 h-40 bg-white/5 rounded-full blur-2xl" />
+   213→            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-56 h-56 bg-white/[0.03] rounded-full" />
+   214→
+   215→            <div className="relative z-10">
+   216→              {/* App branding row */}
+   217→              <div className="flex items-center justify-between mb-4">
+   218→                <div className="flex items-center gap-2.5">
+   219→                  <div className="w-10 h-10 rounded-2xl overflow-hidden ring-2 ring-white/30 shadow-lg">
+   220→                    <img src="/images/IMG_20260527_220851.jpg" alt="Apple.NET" className="w-full h-full object-cover" />
+   221→                  </div>
+   222→                  <div>
+   223→                    <p className="text-white/50 text-[10px] font-medium tracking-wider uppercase">Apple.NET</p>
+   224→                    <h1 className="text-base font-black text-white leading-tight">
+   225→                      {user ? t("home.welcomeBack") : t("home.welcome")}
+   226→                    </h1>
+   227→                  </div>
+   228→                </div>
+   229→                {!user && (
+   230→                  <Button
+   231→                    onClick={onAuthClick}
+   232→                    size="sm"
+   233→                    className="bg-white/20 hover:bg-white/30 text-white border border-white/25 font-bold rounded-xl text-xs h-8 px-3 backdrop-blur-sm"
+   234→                  >
+   235→                    {t("home.signIn")}
+   236→                  </Button>
+   237→                )}
+   238→              </div>
+   239→
+   240→              {user ? (
+   241→                <>
+   242→                  {/* Balance display */}
+   243→                  <div className="bg-white/10 rounded-2xl px-4 py-3.5 mb-4 backdrop-blur-sm border border-white/10">
+   244→                    <p className="text-white/50 text-[10px] font-medium mb-1">{t("home.currentBalance")}</p>
+   245→                    <motion.p
+   246→                      key={balance}
+   247→                      initial={{ scale: 0.85, opacity: 0 }}
+   248→                      animate={{ scale: 1, opacity: 1 }}
+   249→                      transition={{ type: "spring", stiffness: 300, damping: 20 }}
+   250→                      className="text-3xl font-black text-white tracking-tight"
+   251→                    >
+   252→                      {balance.toLocaleString()} <span className="text-base font-medium text-white/60">{t("home.yer")}</span>
+   253→                    </motion.p>
+   254→                    {maxBalance > 0 && (
+   255→                      <div className="mt-2">
+   256→                        <div className="flex justify-between text-white/35 text-[9px] mb-1">
+   257→                          <span>{t("home.outOf")} {maxBalance.toLocaleString()}</span>
+   258→                          <span>{Math.round((balance / maxBalance) * 100)}%</span>
+   259→                        </div>
+   260→                        <div className="h-1 bg-white/15 rounded-full overflow-hidden">
+   261→                          <div className="h-full bg-white/50 rounded-full transition-all duration-700" style={{ width: `${Math.min((balance / maxBalance) * 100, 100)}%` }} />
+   262→                        </div>
+   263→                      </div>
+   264→                    )}
+   265→                  </div>
+   266→
+   267→                  {/* Quick actions */}
+   268→                  <div className="grid grid-cols-2 gap-2">
+   269→                    <Button
+   270→                      onClick={() => onNavigate("cards")}
+   271→                      className="bg-white text-[#1B7A3D] font-black rounded-xl h-11 text-sm hover:bg-white/90 shadow-lg haptic-press"
+   272→                    >
+   273→                      <ShoppingBag className="w-4 h-4 mx-1.5" />
+   274→                      {t("home.buyCards")}
+   275→                    </Button>
+   276→                    <Button
+   277→                      onClick={() => onNavigate("deposit")}
+   278→                      className="bg-white/15 hover:bg-white/25 text-white border border-white/25 font-bold rounded-xl h-11 text-sm haptic-press"
+   279→                    >
+   280→                      <Wallet className="w-4 h-4 mx-1.5" />
+   281→                      {t("home.deposit")}
+   282→                    </Button>
+   283→                  </div>
+   284→                </>
+   285→              ) : (
+   286→                <>
+   287→                  <p className="text-white/65 text-sm leading-relaxed text-center mb-4 max-w-xs mx-auto">
+   288→                    {t("home.platform")}
+   289→                  </p>
+   290→                  <div className="grid grid-cols-2 gap-2">
+   291→                    <Button onClick={onAuthClick} className="bg-white text-[#1B7A3D] font-black rounded-xl h-11 text-sm hover:bg-white/90 shadow-lg haptic-press">
+   292→                      {t("home.signIn")}
+   293→                    </Button>
+   294→                    <Button onClick={() => onNavigate("cards")} className="bg-white/15 hover:bg-white/25 text-white border border-white/25 font-bold rounded-xl h-11 text-sm haptic-press">
+   295→                      <Wifi className="w-4 h-4 mx-1" />{t("home.browseCards")}
+   296→                    </Button>
+   297→                  </div>
+   298→                </>
+   299→              )}
+   300→            </div>
+   301→          </div>
+   302→        </motion.div>
+   303→
+   304→        {/* ══ 2. QUICK SERVICES ══ */}
+   305→        <div>
+   306→          <p className="text-[11px] font-bold text-gray-400 dark:text-slate-500 mb-2 px-1 uppercase tracking-wider">
+   307→            {t("home.services")}
+   308→          </p>
+   309→          <div className="grid grid-cols-4 gap-2">
+   310→            {[
+   311→              { icon: Wifi, label: t("home.cards"), color: "bg-[#E8F5E9] dark:bg-green-900/30 text-[#1B7A3D]", action: () => onNavigate("cards") },
+   312→              { icon: CreditCard, label: t("home.deposit"), color: "bg-blue-50 dark:bg-blue-900/30 text-blue-500 dark:text-blue-400", action: () => onNavigate("deposit") },
+   313→              { icon: Satellite, label: "Starlink", color: "bg-purple-50 dark:bg-purple-900/30 text-purple-500 dark:text-purple-400", action: () => onNavigate("starlink") },
+   314→              { icon: Smartphone, label: t("home.telecom"), color: "bg-orange-50 dark:bg-orange-900/30 text-orange-500 dark:text-orange-400", action: () => onNavigate("telecom") },
+   315→            ].map((item, i) => (
+   316→              <motion.div
+   317→                key={i}
+   318→                whileTap={{ scale: 0.9 }}
+   319→                className="bg-white dark:bg-slate-800 rounded-2xl p-3 text-center card-shadow cursor-pointer haptic-press border border-gray-100/50 dark:border-slate-700/50"
+   320→                onClick={item.action}
+   321→              >
+   322→                <div className={`w-10 h-10 rounded-xl ${item.color} flex items-center justify-center mx-auto mb-1.5`}>
+   323→                  <item.icon className="w-5 h-5" />
+   324→                </div>
+   325→                <p className="text-[10px] font-bold text-gray-700 dark:text-slate-300">{item.label}</p>
+   326→              </motion.div>
+   327→            ))}
+   328→          </div>
+   329→        </div>
+   330→
+   331→        {/* ══ 3. BANNER / ADS ══ */}
+   332→        {(homeBanners.length > 0 || ads.length > 0) && (
+   333→          <div className="relative rounded-2xl overflow-hidden shadow-md">
+   334→            <AnimatePresence mode="wait">
+   335→              <motion.div
+   336→                key={homeBanners.length > 0 ? currentBanner : currentAd}
+   337→                initial={{ opacity: 0, x: isRTL ? 40 : -40 }}
+   338→                animate={{ opacity: 1, x: 0 }}
+   339→                exit={{ opacity: 0, x: isRTL ? -40 : 40 }}
+   340→                transition={{ duration: 0.4 }}
+   341→                className="relative aspect-[16/7] bg-slate-100 dark:bg-slate-800"
+   342→              >
+   343→                <img
+   344→                  src={homeBanners.length > 0
+   345→                    ? (homeBanners[currentBanner]?.imageUrl || "/images/IMG-20260527-WA0043.jpg")
+   346→                    : (ads[currentAd]?.imageUrl || "/images/IMG-20260527-WA0043.jpg")
+   347→                  }
+   348→                  alt="banner"
+   349→                  className="w-full h-full object-cover"
+   350→                />
+   351→                <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent" />
+   352→                <div className="absolute bottom-0 right-0 left-0 p-3">
+   353→                  <Badge className="bg-[#1B7A3D] text-white text-[8px] mb-1 gap-1">
+   354→                    <Megaphone className="w-2.5 h-2.5" />{t("home.ad")}
+   355→                  </Badge>
+   356→                  <h3 className="text-sm font-bold text-white">
+   357→                    {homeBanners.length > 0 ? homeBanners[currentBanner]?.title : ads[currentAd]?.title}
+   358→                  </h3>
+   359→                </div>
+   360→              </motion.div>
+   361→            </AnimatePresence>
+   362→            {/* Dot indicators */}
+   363→            {(homeBanners.length > 1 || ads.length > 1) && (
+   364→              <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-1">
+   365→                {(homeBanners.length > 0 ? homeBanners : ads).map((_, i) => (
+   366→                  <button
+   367→                    key={i}
+   368→                    onClick={() => homeBanners.length > 0 ? setCurrentBanner(i) : setCurrentAd(i)}
+   369→                    className={`h-1.5 rounded-full transition-all ${i === (homeBanners.length > 0 ? currentBanner : currentAd) ? "bg-white w-4" : "bg-white/40 w-1.5"}`}
+   370→                  />
+   371→                ))}
+   372→              </div>
+   373→            )}
+   374→          </div>
+   375→        )}
+   376→
+   377→        {/* ══ 4. STATS ROW ══ */}
+   378→        <div className="grid grid-cols-3 gap-2">
+   379→          {[
+   380→            { value: "99.9%", label: t("home.successRate"), icon: TrendingUp, color: "text-emerald-500" },
+   381→            { value: "10K+", label: t("home.activeUsers"), icon: Star, color: "text-amber-500" },
+   382→            { value: String(vendingNetworks.length || fbNetworks.length), label: t("home.networks"), icon: Zap, color: "text-blue-500" },
+   383→          ].map((stat, i) => (
+   384→            <motion.div
+   385→              key={i}
+   386→              initial={{ opacity: 0, y: 8 }}
+   387→              animate={{ opacity: 1, y: 0 }}
+   388→              transition={{ delay: 0.1 + i * 0.05 }}
+   389→              className="bg-white dark:bg-slate-800 rounded-2xl p-3 text-center card-shadow border border-gray-100/50 dark:border-slate-700/50"
+   390→            >
+   391→              <stat.icon className={`w-4 h-4 mx-auto mb-1 ${stat.color}`} />
+   392→              <p className={`text-lg font-black ${stat.color}`}>{stat.value}</p>
+   393→              <p className="text-[9px] text-gray-400 dark:text-slate-500 font-semibold">{stat.label}</p>
+   394→            </motion.div>
+   395→          ))}
+   396→        </div>
+   397→
+   398→        {/* ══ 5. VENDING MACHINES ══ */}
+   399→        <div>
+   400→          <div className="flex items-center justify-between mb-3">
+   401→            <div className="flex items-center gap-2">
+   402→              <div className="w-7 h-7 rounded-xl bg-[#E8F5E9] dark:bg-green-900/30 flex items-center justify-center">
+   403→                <Package className="w-3.5 h-3.5 text-[#1B7A3D]" />
+   404→              </div>
+   405→              <div>
+   406→                <h2 className="text-sm font-black text-gray-900 dark:text-white">
+   407→                  {t("home.availableMachines")}
+   408→                </h2>
+   409→                <p className="text-[10px] text-gray-400 dark:text-slate-500">
+   410→                  {t("home.networksWithCards")}
+   411→                </p>
+   412→              </div>
+   413→            </div>
+   414→            <Badge className="bg-[#E8F5E9] dark:bg-green-900/30 text-[#1B7A3D] text-[9px] font-bold">
+   415→              {vendingNetworks.length} {t("home.machine")}
+   416→            </Badge>
+   417→          </div>
+   418→
+   419→          {/* Province Filter */}
+   420→          <div className="mb-3">
+   421→            <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+   422→              <button
+   423→                onClick={() => { setSelectedProvince(null); setSelectedDistrict(null); }}
+   424→                className={`px-3 py-1.5 rounded-xl text-[10px] font-bold whitespace-nowrap transition-all flex-shrink-0 ${!selectedProvince ? "bg-[#1B7A3D] text-white btn-green-shadow" : "bg-white dark:bg-slate-800 text-gray-500 dark:text-slate-400 card-shadow border border-gray-100 dark:border-slate-700"}`}
+   425→              >
+   426→                <Navigation className="w-3 h-3 inline ml-1" />{t("home.all")}
+   427→              </button>
+   428→              {PROVINCES.map(province => {
+   429→                const count = fbNetworks.filter(n => n.provinceId === province.id && getAvailableCount(n.id) > 0).length;
+   430→                if (count === 0 && selectedProvince !== province.id) return null;
+   431→                return (
+   432→                  <button
+   433→                    key={province.id}
+   434→                    onClick={() => { if (selectedProvince === province.id) { setSelectedProvince(null); setSelectedDistrict(null); } else { setSelectedProvince(province.id); setSelectedDistrict(null); } }}
+   435→                    className={`px-3 py-1.5 rounded-xl text-[10px] font-bold whitespace-nowrap transition-all flex-shrink-0 ${selectedProvince === province.id ? "bg-orange-500 text-white shadow-md" : "bg-white dark:bg-slate-800 text-gray-500 dark:text-slate-400 card-shadow border border-gray-100 dark:border-slate-700"}`}
+   436→                  >
+   437→                    🏛️ {lang === "en" && province.nameEn ? province.nameEn : province.name} ({count})
+   438→                  </button>
+   439→                );
+   440→              })}
+   441→            </div>
+   442→            <AnimatePresence>
+   443→              {selectedProvince && districts.length > 0 && (
+   444→                <motion.div
+   445→                  initial={{ opacity: 0, height: 0 }}
+   446→                  animate={{ opacity: 1, height: "auto" }}
+   447→                  exit={{ opacity: 0, height: 0 }}
+   448→                  className="overflow-hidden mt-2"
+   449→                >
+   450→                  <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+   451→                    <button onClick={() => setSelectedDistrict(null)} className={`px-3 py-1.5 rounded-xl text-[10px] font-bold whitespace-nowrap flex-shrink-0 ${!selectedDistrict ? "bg-[#1B7A3D] text-white" : "bg-white dark:bg-slate-800 text-gray-500 dark:text-slate-400 card-shadow border border-gray-100 dark:border-slate-700"}`}>
+   452→                      {t("home.all")}
+   453→                    </button>
+   454→                    {districts.map((d, i) => {
+   455→                      const count = fbNetworks.filter(n => n.provinceId === selectedProvince && n.district === d && getAvailableCount(n.id) > 0).length;
+   456→                      if (count === 0 && selectedDistrict !== d) return null;
+   457→                      const districtLabel = lang === "en" && districtsEn[i] ? districtsEn[i] : d;
+   458→                      return (
+   459→                        <button key={d} onClick={() => setSelectedDistrict(selectedDistrict === d ? null : d)} className={`px-3 py-1.5 rounded-xl text-[10px] font-bold whitespace-nowrap flex-shrink-0 ${selectedDistrict === d ? "bg-red-500 text-white" : "bg-white dark:bg-slate-800 text-gray-500 dark:text-slate-400 card-shadow border border-gray-100 dark:border-slate-700"}`}>
+   460→                          📍 {districtLabel}
+   461→                        </button>
+   462→                      );
+   463→                    })}
+   464→                  </div>
+   465→                </motion.div>
+   466→              )}
+   467→            </AnimatePresence>
+   468→          </div>
+   469→
+   470→          {/* Vending network cards */}
+   471→          <div className="space-y-2">
+   472→            {vendingNetworks.length === 0 ? (
+   473→              <div className="bg-white dark:bg-slate-800 rounded-2xl card-shadow p-6 text-center border border-gray-100/50 dark:border-slate-700/50">
+   474→                <div className="w-12 h-12 rounded-2xl bg-gray-100 dark:bg-slate-700 flex items-center justify-center mx-auto mb-3">
+   475→                  <Wifi className="w-6 h-6 text-gray-300 dark:text-slate-500" />
+   476→                </div>
+   477→                <p className="text-gray-500 dark:text-slate-400 text-sm font-bold">
+   478→                  {t("home.noMachines")}
+   479→                </p>
+   480→                <p className="text-gray-300 dark:text-slate-600 text-[10px] mt-1">
+   481→                  {selectedProvince ? t("home.tryOtherProvince") : t("home.newCardsComing")}
+   482→                </p>
+   483→              </div>
+   484→            ) : (
+   485→              vendingNetworks.map((net, i) => {
+   486→                const availableCount = getAvailableCount(net.id);
+   487→                const cheapestCard = allCards.filter(c => c.network === net.id && !c.isUsed).sort((a, b) => (a.price || 0) - (b.price || 0))[0];
+   488→                const isNearby = net.provinceId === userProvinceId;
+   489→                return (
+   490→                  <motion.div
+   491→                    key={net.id}
+   492→                    initial={{ opacity: 0, y: 8 }}
+   493→                    animate={{ opacity: 1, y: 0 }}
+   494→                    transition={{ delay: i * 0.04 }}
+   495→                    whileTap={{ scale: 0.98 }}
+   496→                    onClick={() => setSelectedNetwork(net)}
+   497→                    className="bg-white dark:bg-slate-800 rounded-2xl card-shadow p-4 cursor-pointer transition-colors border-r-4 dark:border-slate-700 group hover:shadow-md"
+   498→                    style={{ borderRightColor: net.color || "#1B7A3D" }}
+   499→                  >
+   500→                    <div className="flex items-center justify-between">
+   501→                      <div className="flex items-center gap-3">
+   502→                        <div className="w-12 h-12 rounded-xl flex items-center justify-center text-xl overflow-hidden flex-shrink-0" style={{ backgroundColor: net.bgColor || (net.color + "1A") }}>
+   503→                          {(net as unknown as Record<string, unknown>).imageBase64 ? (
+   504→                            <img src={(net as unknown as Record<string, unknown>).imageBase64 as string} alt={net.name} className="w-10 h-10 rounded-lg object-cover" />
+   505→                          ) : <span>{net.emoji}</span>}
+   506→                        </div>
+   507→                        <div className="min-w-0">
+   508→                          <div className="flex items-center gap-1.5 flex-wrap">
+   509→                            <h3 className="text-sm font-black truncate" style={{ color: net.color }}>{net.name}</h3>
+   510→                            {isNearby && <span className="text-[8px] bg-[#E8F5E9] dark:bg-green-900/30 text-[#1B7A3D] px-1.5 py-0.5 rounded-full font-bold">{t("home.nearby")}</span>}
+   511→                          </div>
+   512→                          <div className="flex items-center gap-2 mt-1 flex-wrap">
+   513→                            {net.provinceName && (() => {
+   514→                              const provObj = PROVINCES.find(p => p.id === net.provinceId);
+   515→                              const provLabel = lang === "en" && provObj?.nameEn ? provObj.nameEn : net.provinceName;
+   516→                              return (
+   517→                                <span className="text-[10px] text-gray-400 dark:text-slate-500 flex items-center gap-0.5">
+   518→                                  <Globe className="w-3 h-3" />{provLabel}
+   519→                                </span>
+   520→                              );
+   521→                            })()}
+   522→                            {net.district && (() => {
+   523→                              const provObj = PROVINCES.find(p => p.id === net.provinceId);
+   524→                              const distIdx = provObj ? provObj.districts.indexOf(net.district) : -1;
+   525→                              const distLabel = lang === "en" && provObj?.districtsEn && distIdx >= 0 && provObj.districtsEn[distIdx] ? provObj.districtsEn[distIdx] : net.district;
+   526→                              return (
+   527→                                <span className="text-[10px] text-gray-400 dark:text-slate-500 flex items-center gap-0.5">
+   528→                                  <MapPin className="w-3 h-3" />{distLabel}
+   529→                                </span>
+   530→                              );
+   531→                            })()}
+   532→                            {net.ownerPhone && (
+   533→                              <a href={`https://wa.me/${net.ownerPhone}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="text-[10px] text-blue-500 flex items-center gap-0.5 hover:underline">
+   534→                                <Phone className="w-3 h-3" />{t("home.contact")}
+   535→                              </a>
+   536→                            )}
+   537→                          </div>
+   538→                        </div>
+   539→                      </div>
+   540→                      <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+   541→                        <Badge className="bg-[#E8F5E9] dark:bg-green-900/30 text-[#1B7A3D] text-[10px] font-bold">
+   542→                          {availableCount} {t("home.cardCount")}
+   543→                        </Badge>
+   544→                        {cheapestCard && (
+   545→                          <span className="text-[9px] text-gray-400 dark:text-slate-500">
+   546→                            {t("home.from")} {cheapestCard.price?.toLocaleString()} {t("home.yer")}
+   547→                          </span>
+   548→                        )}
+   549→                        <ChevronLeft className={`w-4 h-4 text-gray-300 dark:text-slate-600 transition-transform group-hover:-translate-x-0.5 ${!isRTL ? "rotate-180" : ""}`} />
+   550→                      </div>
+   551→                    </div>
+   552→                  </motion.div>
+   553→                );
+   554→              })
+   555→            )}
+   556→          </div>
+   557→        </div>
+   558→
+   559→        {/* ══ 6. ALL NETWORKS ══ */}
+   560→        <div>
+   561→          <div className="flex items-center justify-between mb-3">
+   562→            <h2 className="text-sm font-black text-gray-900 dark:text-white">
+   563→              {t("home.allNetworks")}
+   564→            </h2>
+   565→            <Badge className="bg-[#E8F5E9] dark:bg-green-900/30 text-[#1B7A3D] text-[9px]">
+   566→              {filteredNetworks.length} {t("home.networkCount")}
+   567→            </Badge>
+   568→          </div>
+   569→          {/* User/Network Search */}
+   570→          <div className="relative mb-3">
+   571→            <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+   572→            <Input
+   573→              value={networkSearch}
+   574→              onChange={(e) => setNetworkSearch(e.target.value)}
+   575→              placeholder={t("home.searchNetwork")}
+   576→              className="bg-white dark:bg-slate-800 border-gray-200 dark:border-slate-700 rounded-xl h-10 text-sm pr-10"
+   577→            />
+   578→          </div>
+   579→          <div className="grid grid-cols-2 gap-2">
+   580→            {filteredNetworks.length === 0 ? (
+   581→              <div className="col-span-2 bg-white dark:bg-slate-800 rounded-2xl card-shadow p-6 text-center">
+   582→                <p className="text-gray-400 dark:text-slate-500 text-sm">{t("home.noNetworks")}</p>
+   583→              </div>
+   584→            ) : (
+   585→              filteredNetworks.map((net, i) => {
+   586→                const availableCount = getAvailableCount(net.id);
+   587→                return (
+   588→                  <motion.div
+   589→                    key={net.id}
+   590→                    initial={{ opacity: 0, scale: 0.95 }}
+   591→                    animate={{ opacity: 1, scale: 1 }}
+   592→                    transition={{ delay: i * 0.03 }}
+   593→                    whileTap={{ scale: 0.96 }}
+   594→                    onClick={() => setSelectedNetwork(net)}
+   595→                    className="bg-white dark:bg-slate-800 rounded-2xl card-shadow p-3 cursor-pointer border border-gray-100/50 dark:border-slate-700/50 hover:shadow-md transition-shadow"
+   596→                  >
+   597→                    <div className="flex items-center gap-2.5 mb-2">
+   598→                      <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base overflow-hidden flex-shrink-0" style={{ backgroundColor: net.bgColor || (net.color + "1A") }}>
+   599→                        {(net as unknown as Record<string, unknown>).imageBase64 ? (
+   600→                          <img src={(net as unknown as Record<string, unknown>).imageBase64 as string} alt={net.name} className="w-7 h-7 rounded-lg object-cover" />
+   601→                        ) : <span>{net.emoji}</span>}
+   602→                      </div>
+   603→                      <div className="min-w-0 flex-1">
+   604→                        <h3 className="text-xs font-black truncate" style={{ color: net.color }}>{net.name}</h3>
+   605→                        {net.provinceName && (() => {
+   606→                          const provObj = PROVINCES.find(p => p.id === net.provinceId);
+   607→                          const provLabel = lang === "en" && provObj?.nameEn ? provObj.nameEn : net.provinceName;
+   608→                          return (
+   609→                            <span className="text-[9px] text-gray-400 dark:text-slate-500 flex items-center gap-0.5">
+   610→                              <Globe className="w-2.5 h-2.5" />{provLabel}
+   611→                            </span>
+   612→                          );
+   613→                        })()}
+   614→                      </div>
+   615→                    </div>
+   616→                    <div className={`text-[9px] px-2 py-1 rounded-lg font-bold text-center ${availableCount > 0 ? "bg-[#E8F5E9] dark:bg-green-900/30 text-[#1B7A3D]" : "bg-gray-100 dark:bg-slate-700 text-gray-400 dark:text-slate-500"}`}>
+   617→                      {availableCount > 0 ? `${availableCount} ${t("home.availableCards")}` : t("home.unavailable")}
+   618→                    </div>
+   619→                  </motion.div>
+   620→                );
+   621→              })
+   622→            )}
+   623→          </div>
+   624→        </div>
+   625→
+   626→        {/* ══ 7. SIM + DOWNLOAD BANNER ══ */}
+   627→        <div className="grid grid-cols-2 gap-3">
+   628→          {/* SIM Card teaser */}
+   629→          <div className="bg-gradient-to-br from-purple-500 to-purple-700 rounded-2xl overflow-hidden shadow-md relative">
+   630→            <img src="/images/IMG-20260527-WA0042.jpg" alt="SIM" className="w-full h-28 object-cover opacity-40" />
+   631→            <div className="absolute inset-0 p-3 flex flex-col justify-between">
+   632→              <Badge className="bg-white/20 text-white border-0 text-[8px] w-fit">{t("home.comingSoon")}</Badge>
+   633→              <div>
+   634→                <p className="text-white font-black text-xs">{t("home.simCard")}</p>
+   635→                <p className="text-white/70 text-[9px]">5,000 {t("home.yer")}</p>
+   636→              </div>
+   637→            </div>
+   638→          </div>
+   639→
+   640→          {/* Download app banner */}
+   641→          <div className="bg-gradient-to-br from-[#0d5c2e] to-[#1B7A3D] rounded-2xl p-3 shadow-md flex flex-col justify-between">
+   642→            <div className="flex items-center gap-2 mb-2">
+   643→              <div className="w-8 h-8 rounded-xl overflow-hidden ring-2 ring-white/20">
+   644→                <img src="/images/IMG_20260527_220851.jpg" alt="app" className="w-full h-full object-cover" />
+   645→              </div>
+   646→              <div>
+   647→                <p className="text-white font-black text-[10px]">Apple.NET</p>
+   648→                <p className="text-white/50 text-[8px]">{t("home.app")}</p>
+   649→              </div>
+   650→            </div>
+   651→            {appDownloadUrl ? (
+   652→              <a href={appDownloadUrl} target="_blank" rel="noopener noreferrer" className="bg-white text-[#1B7A3D] font-black text-[10px] rounded-xl py-2 text-center flex items-center justify-center gap-1 haptic-press hover:bg-white/90">
+   653→                <Download className="w-3 h-3" />{t("home.downloadApk")}
+   654→              </a>
+   655→            ) : (
+   656→              <div className="bg-white/10 text-white/50 text-[9px] rounded-xl py-2 text-center font-bold">
+   657→                {t("home.apkComingSoon")}
+   658→              </div>
+   659→            )}
+   660→          </div>
+   661→        </div>
+   662→
+   663→      </div>
+   664→
+   665→      {/* Network Detail Modal */}
+   666→      <AnimatePresence>
+   667→        {selectedNetwork && (
+   668→          <NetworkDetailModal network={selectedNetwork} onClose={() => setSelectedNetwork(null)} allCards={allCards} />
+   669→        )}
+   670→      </AnimatePresence>
+   671→    </motion.div>
+   672→  );
+   673→}
+   674→

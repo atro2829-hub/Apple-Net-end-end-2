@@ -64,8 +64,9 @@ import { ComplaintPage } from "@/components/ComplaintPage";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { LanguageToggle } from "@/components/LanguageToggle";
 import { PermissionModal } from "@/components/PermissionModal";
+import { PinLockScreen } from "@/components/PinLockScreen";
 import { iOSSpring } from "@/lib/constants";
-import { initNotifications } from "@/lib/notifications";
+import { initNotifications, initFCMToken } from "@/lib/notifications";
 import { useLanguage } from "@/context/LanguageContext";
 
 const APP_VERSION = "2.1.0";
@@ -102,6 +103,21 @@ export default function AppleNetApp() {
   const [locationModalSaving, setLocationModalSaving] = useState(false);
   const [locationModalDismissed, setLocationModalDismissed] = useState(false);
   const [userPhotoURL, setUserPhotoURL] = useState<string>("");
+  const [pinLocked, setPinLocked] = useState(false);
+  const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [pinEnabled, setPinEnabled] = useState(false);
+
+  // Listen for PIN/biometric setting changes
+  useEffect(() => {
+    if (!user) return;
+    const pinUnsub = onValue(ref(db, `users/${user.uid}/pinEnabled`), (snap) => {
+      setPinEnabled(!!snap.val());
+    });
+    const bioUnsub = onValue(ref(db, `users/${user.uid}/biometricEnabled`), (snap) => {
+      setBiometricEnabled(!!snap.val());
+    });
+    return () => { pinUnsub(); bioUnsub(); };
+  }, [user]);
 
   // Handle URL params for PWA shortcuts
   useEffect(() => {
@@ -134,6 +150,16 @@ export default function AppleNetApp() {
             const netSnap = await get(ref(db, `users/${u.uid}/managedNetwork`));
             setManagedNetwork(netSnap.val() || "");
           }
+          // Check PIN and biometric settings
+          const pinSnap = await get(ref(db, `users/${u.uid}/pinEnabled`));
+          const bioSnap = await get(ref(db, `users/${u.uid}/biometricEnabled`));
+          const isPinEnabled = !!pinSnap.val();
+          const isBioEnabled = !!bioSnap.val();
+          setPinEnabled(isPinEnabled);
+          setBiometricEnabled(isBioEnabled);
+          if (isPinEnabled) setPinLocked(true);
+          // Initialize FCM
+          initFCMToken(u.uid).catch(() => {});
         } catch {
           setIsAdmin(false);
           setUserRole("user");
@@ -283,6 +309,19 @@ export default function AppleNetApp() {
         onLoginClick={() => { setShowOnboarding(false); setAuthMode("login"); setShowAuth(true); }}
         onRegisterClick={() => { setShowOnboarding(false); setAuthMode("register"); setShowAuth(true); }}
       />
+    );
+  }
+
+  // PIN Lock Screen
+  if (pinLocked && user && pinEnabled) {
+    return (
+      <AnimatePresence>
+        <PinLockScreen
+          user={user}
+          onUnlock={() => setPinLocked(false)}
+          biometricEnabled={biometricEnabled}
+        />
+      </AnimatePresence>
     );
   }
 

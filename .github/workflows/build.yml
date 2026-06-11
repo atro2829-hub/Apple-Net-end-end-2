@@ -1,0 +1,235 @@
+name: Build & Deploy Apple.NET
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '20'
+  BUN_VERSION: '1.1.0'
+
+jobs:
+  build:
+    name: Build Next.js App
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: bunx prisma generate
+
+      - name: Build Next.js (User App)
+        run: bun run build
+        env:
+          DATABASE_URL: "file:./dev.db"
+          NEXT_PUBLIC_FIREBASE_API_KEY: "AIzaSyDeQMrepTnlldqGycyMzy1qeoaD3g7nxgA"
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: "applenet711.firebaseapp.com"
+          NEXT_PUBLIC_FIREBASE_DATABASE_URL: "https://applenet711-default-rtdb.firebaseio.com"
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: "applenet711"
+          NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: "applenet711.firebasestorage.app"
+          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "164323561264"
+          NEXT_PUBLIC_FIREBASE_APP_ID: "1:164323561264:android:2000f0cc595b6d7260c2f5"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextjs-build
+          path: .next/
+          retention-days: 7
+
+  build-android-user:
+    name: Build Android APK (User App)
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          npm install -g @capacitor/cli
+          bun install
+
+      - name: Build Next.js static export
+        run: |
+          # Temporarily add output: "export" for static build
+          sed -i 's/const nextConfig: NextConfig = {/const nextConfig: NextConfig = {\n  output: "export",/' next.config.ts
+          bun run build
+        env:
+          DATABASE_URL: "file:./dev.db"
+
+      - name: Setup Capacitor
+        run: |
+          npx cap add android 2>/dev/null || true
+          npx cap sync android
+
+      - name: Copy google-services.json (User App)
+        run: |
+          mkdir -p android/app/src/main/assets
+          echo '${{ secrets.GOOGLE_SERVICES_USER }}' > android/app/google-services.json
+
+      - name: Build APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease
+        env:
+          KEYSTORE_PATH: ../keystore/apple-net.keystore
+          KEYSTORE_PASSWORD: applenet2024
+          KEY_ALIAS: apple-net
+          KEY_PASSWORD: applenet2024
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: android/app/build/outputs/apk/release/*.apk
+          retention-days: 30
+
+  build-android-admin:
+    name: Build Android APK (Admin App)
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          npm install -g @capacitor/cli
+          bun install
+
+      - name: Build Next.js static export (Admin)
+        run: |
+          # Copy admin capacitor config
+          cp capacitor-admin/capacitor.config.ts capacitor.config.ts
+          # Add output: "export" for static build
+          sed -i 's/const nextConfig: NextConfig = {/const nextConfig: NextConfig = {\n  output: "export",/' next.config.ts
+          bun run build
+        env:
+          DATABASE_URL: "file:./dev.db"
+
+      - name: Setup Capacitor
+        run: |
+          npx cap add android 2>/dev/null || true
+          # Replace package name for admin
+          sed -i 's/com.applenet.app/com.applenet.admin/g' android/app/src/main/AndroidManifest.xml
+          sed -i 's/com.applenet.app/com.applenet.admin/g' android/app/build.gradle
+          sed -i 's/com.applenet.app/com.applenet.admin/g' android/app/src/main/java/com/applenet/app/MainActivity.java 2>/dev/null || true
+          npx cap sync android
+
+      - name: Copy google-services.json (Admin App)
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICES_ADMIN }}' > android/app/google-services.json
+
+      - name: Build APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease
+        env:
+          KEYSTORE_PATH: ../keystore/apple-net.keystore
+          KEYSTORE_PASSWORD: applenet2024
+          KEY_ALIAS: apple-net
+          KEY_PASSWORD: applenet2024
+
+      - name: Upload Admin APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-release-apk
+          path: android/app/build/outputs/apk/release/*.apk
+          retention-days: 30
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-android-user, build-android-admin]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download APKs
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Apple.NET v${{ steps.version.outputs.version }}
+          body: |
+            ## Apple.NET v${{ steps.version.outputs.version }}
+            
+            ### User App (com.applenet.app)
+            - Download `app-release.apk`
+            
+            ### Admin App (com.applenet.admin)  
+            - Download `admin-release.apk`
+            
+            ### SHA Keys for Firebase
+            - SHA1: `C9:DA:33:A9:EF:88:69:F0:DA:94:CF:67:DF:C8:BA:8A:DA:A7:81:19`
+            - SHA256: `B9:E8:3F:28:40:92:40:FE:2E:D5:9D:9D:5A:50:7C:FD:FE:42:D5:A2:F7:8C:31:0F:C1:4B:87:27:63:D0:61:67`
+          files: |
+            artifacts/app-release-apk/*.apk
+            artifacts/admin-release-apk/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

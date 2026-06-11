@@ -1,4 +1,6 @@
-// Notification System for Apple.NET
+"use client";
+
+// Notification System for Apple.NET with FCM Push Support
 
 const NOTIFICATION_PREF_KEY = "applenet_notifications_enabled";
 const FCM_TOKEN_KEY = "applenet_fcm_token";
@@ -36,7 +38,6 @@ export function setNotificationPreference(enabled: boolean): void {
 
 /**
  * Request notification permission from the user
- * Returns the permission status
  */
 export async function requestNotificationPermission(): Promise<{
   granted: boolean;
@@ -89,7 +90,6 @@ export function showLocalNotification(options: {
       };
     }
 
-    // Auto-close after 5 seconds
     setTimeout(() => notification.close(), 5000);
   } catch {
     // Notification creation failed silently
@@ -97,7 +97,7 @@ export function showLocalNotification(options: {
 }
 
 /**
- * Save FCM token to localStorage (placeholder for future FCM integration)
+ * Save FCM token to localStorage
  */
 export function saveFCMToken(token: string): void {
   if (typeof window === "undefined") return;
@@ -121,35 +121,106 @@ export function removeFCMToken(): void {
 }
 
 /**
- * Initialize notification system
- * Call this on app startup
+ * Initialize FCM push notifications and register token
+ * Call this after user logs in
  */
-export async function initNotifications(): Promise<void> {
-  if (!isNotificationSupported()) return;
-  
-  // If user previously enabled notifications but permission was revoked,
-  // update the preference
-  if (isNotificationEnabled() && Notification.permission !== "granted") {
-    setNotificationPreference(false);
+export async function initFCMToken(uid: string): Promise<string | null> {
+  if (typeof window === "undefined") return null;
+
+  try {
+    // Dynamic import to avoid SSR issues
+    const { getMessagingInstance } = await import("@/lib/firebase");
+    const messaging = await getMessagingInstance();
+    
+    if (!messaging) {
+      // Fallback: try Capacitor Push Notifications
+      return await initCapacitorPush(uid);
+    }
+
+    const { getToken, onMessage } = await import("firebase/messaging");
+    
+    // Get FCM token
+    const currentToken = await getToken(messaging, {
+      vapidKey: "BEl62jGME5RCp0D8y5CKNP9GR3P9CDLdL3mfHVhhXo8JcQGm3F4D3L3M2N5K8P1R2T6W9X4Y7Z0A3B6C9D2E5F8", // Will be replaced with actual VAPID key
+    });
+
+    if (currentToken) {
+      saveFCMToken(currentToken);
+      
+      // Save token to Firebase RTDB for server-side access
+      const { db } = await import("@/lib/firebase");
+      const { ref, update } = await import("firebase/database");
+      await update(ref(db, `users/${uid}`), { fcmToken: currentToken });
+      
+      // Listen for foreground messages
+      onMessage(messaging, (payload) => {
+        if (payload.notification) {
+          showLocalNotification({
+            title: payload.notification.title || "Apple.NET",
+            body: payload.notification.body || "",
+            data: payload.data as Record<string, unknown> || {},
+          });
+        }
+      });
+      
+      return currentToken;
+    }
+    
+    return null;
+  } catch (error) {
+    console.warn("[FCM] Token generation failed:", error);
+    // Try Capacitor as fallback
+    return await initCapacitorPush(uid);
   }
 }
 
 /**
- * Register service worker for push notifications
+ * Initialize Capacitor Push Notifications (native app)
  */
-export async function registerPushSubscription(): Promise<PushSubscription | null> {
-  if (typeof window === "undefined" || !("serviceWorker" in navigator)) return null;
-
+async function initCapacitorPush(uid: string): Promise<string | null> {
   try {
-    const registration = await navigator.serviceWorker.ready;
-    const subscription = await registration.pushManager.getSubscription();
-    
-    if (subscription) {
-      return subscription;
-    }
+    if (typeof window === "undefined" || !("Capacitor" in window)) return null;
 
-    // For future FCM integration, we would create a subscription here
-    // with a valid VAPID key
+    const { PushNotifications } = await import("@capacitor/push-notifications");
+    
+    // Request permission
+    const permResult = await PushNotifications.requestPermissions();
+    
+    if (permResult.receive === "granted") {
+      // Register for push
+      await PushNotifications.register();
+      
+      // Listen for registration token
+      return new Promise((resolve) => {
+        PushNotifications.addListener("registration", async (token) => {
+          saveFCMToken(token.value);
+          
+          // Save to Firebase
+          const { db } = await import("@/lib/firebase");
+          const { ref, update } = await import("firebase/database");
+          await update(ref(db, `users/${uid}`), { fcmToken: token.value });
+          
+          resolve(token.value);
+        });
+        
+        // Listen for push notifications received in foreground
+        PushNotifications.addListener("pushNotificationReceived", (notification) => {
+          showLocalNotification({
+            title: notification.title || "Apple.NET",
+            body: notification.body || "",
+          });
+        });
+        
+        // Handle notification action
+        PushNotifications.addListener("pushNotificationActionPerformed", () => {
+          window.focus();
+        });
+        
+        // Timeout after 10s
+        setTimeout(() => resolve(null), 10000);
+      });
+    }
+    
     return null;
   } catch {
     return null;
@@ -157,12 +228,23 @@ export async function registerPushSubscription(): Promise<PushSubscription | nul
 }
 
 /**
- * Send a test notification (for debugging)
+ * Initialize notification system
+ */
+export async function initNotifications(): Promise<void> {
+  if (!isNotificationSupported()) return;
+  
+  if (isNotificationEnabled() && Notification.permission !== "granted") {
+    setNotificationPreference(false);
+  }
+}
+
+/**
+ * Send a test notification
  */
 export function sendTestNotification(): void {
   showLocalNotification({
     title: "Apple.NET",
-    body: "مرحبًا! الإشعارات تعمل بشكل صحيح ✅",
+    body: "مرحبًا! الإشعارات تعمل بشكل صحيح",
     tag: "test-notification",
   });
 }

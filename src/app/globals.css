@@ -734,3 +734,90 @@ textarea:focus-visible {
 html[dir="ltr"] .app-header { direction: ltr; }
 html[dir="ltr"] .app-bottom-nav { direction: ltr; }
 html[dir="ltr"] nav .flex.items-center.justify-around { direction: ltr; }
+
+/* ── Responsive design for all phone sizes ─────────── */
+/* Safe area support for notched phones */
+@supports (padding: max(0px)) {
+  .safe-bottom {
+    padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+  }
+  .safe-top {
+    padding-top: env(safe-area-inset-top);
+  }
+}
+
+/* Viewport height fix for mobile browsers */
+#app-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* Responsive font scaling */
+@media (max-width: 360px) {
+  html { font-size: 14px; }
+  .text-xl { font-size: 1.125rem !important; }
+  .text-2xl { font-size: 1.375rem !important; }
+}
+
+@media (min-width: 361px) and (max-width: 414px) {
+  html { font-size: 15px; }
+}
+
+@media (min-width: 415px) {
+  html { font-size: 16px; }
+}
+
+/* Touch target minimum size (48x48 for accessibility) */
+.touch-target {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* Prevent horizontal overflow on all screens */
+body {
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: none;
+}
+
+/* Input zoom prevention on iOS */
+@media screen and (-webkit-min-device-pixel-ratio: 0) {
+  input[type="text"],
+  input[type="number"],
+  input[type="tel"],
+  input[type="email"],
+  input[type="password"],
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Smooth scroll for all containers */
+.custom-scrollbar {
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+}
+
+/* Landscape mode adjustments */
+@media (orientation: landscape) and (max-height: 500px) {
+  .app-bottom-nav {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+  }
+}
+
+/* Capacitor native app specific styles */
+.Capacitor .app-header {
+  padding-top: env(safe-area-inset-top, 0);
+}
+
+.Capacitor .app-bottom-nav {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+/* Print styles for PDF generation */
+@media print {
+  .no-print { display: none !important; }
+  body { background: white !important; }
+}

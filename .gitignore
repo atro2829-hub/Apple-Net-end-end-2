@@ -52,3 +52,16 @@ prompt
 server.log
 # Skills directory
 /skills/
+
+# Keystore passwords - keep keystore but not passwords in env
+firebase-admin-sdk.json
+
+# Capacitor build artifacts
+android/.gradle/
+android/app/build/
+android/build/
+ios/build/
+capacitor-admin/node_modules/
+
+# Uploads (user-generated content)
+public/uploads/

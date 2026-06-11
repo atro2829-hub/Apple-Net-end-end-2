@@ -1,0 +1,2002 @@
+     1→"use client";
+     2→
+     3→import React, { useState, useEffect, useCallback, useMemo } from "react";
+     4→import { motion, AnimatePresence } from "framer-motion";
+     5→import {
+     6→  X, Wifi, Users, Wallet, Gift, Receipt, Building2, Megaphone, Smartphone,
+     7→  Plus, Eye, EyeOff, Send, TrendingUp, BarChart3, Search, Check, Phone,
+     8→  CreditCard, Clock, Mail, ShieldCheck, ShoppingBag, ChevronDown, Copy,
+     9→  UserX, Pencil, Save, Globe, Crown, UserCog, Hash, Trash2, Download,
+    10→  Satellite, Package, Upload, MapPin, Banknote, Bell, FileText,
+    11→  Settings as SettingsIcon, Star, AlertTriangle, ToggleLeft, ToggleRight,
+    12→  Smartphone as SimIcon, Image as ImageIcon, Link, Info, MessageSquare,
+    13→  FileCheck, XCircle, CheckCircle2, Signal, Gauge, Store
+    14→} from "lucide-react";
+    15→import { Button } from "@/components/ui/button";
+    16→import { Input } from "@/components/ui/input";
+    17→import { Badge } from "@/components/ui/badge";
+    18→import { db, auth } from "@/lib/firebase";
+    19→import { ref, set, get, push, update, remove, onValue, runTransaction } from "firebase/database";
+    20→import { toast } from "sonner";
+    21→import {
+    22→  CARD_TIERS as DEFAULT_TIERS, NETWORKS as DEFAULT_NETWORKS,
+    23→  PROVINCES, getDistricts, formatDate, iOSSpring, ADMIN_WHATSAPP
+    24→} from "@/lib/constants";
+    25→import { compressImageToBase64 } from "@/lib/utils";
+    26→import {
+    27→  AppUser, CardItem, BankDetail, Advertisement, SimCard, DepositRequest,
+    28→  NetworkItem, TierItem, RedeemCode, SubscriptionPlan, UserSubscription,
+    29→  BulkNotification, StarlinkProduct, StarlinkOrder, SharedRedeemCode,
+    30→  CommissionSetting, CommissionEntry, MonthlyPayout, CardSaleLocation,
+    31→  TelecomProvider, TelecomNetwork, TelecomPackage
+    32→} from "@/lib/types";
+    33→import jsPDF from "jspdf";
+    34→import { useLanguage } from "@/context/LanguageContext";
+    35→import autoTable from "jspdf-autotable";
+    36→
+    37→// ─── Helper: format number with commas ─────────────────────
+    38→function fmt(n: number): string {
+    39→  return n.toLocaleString("en-US");
+    40→}
+    41→
+    42→// ─── Helper: generate random redeem code ────────────────────
+    43→function generateCode(): string {
+    44→  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    45→  let code = "AP";
+    46→  for (let i = 0; i < 8; i++) code += chars.charAt(Math.floor(Math.random() * chars.length));
+    47→  return code;
+    48→}
+    49→
+    50→// ─── Tab definitions (labels set inside component for i18n) ──
+    51→const ADMIN_TAB_IDS = [
+    52→  { id: "overview", icon: BarChart3, labelKey: "admin2.statistics" },
+    53→  { id: "balances", icon: Wallet, labelKey: "admin2.balances" },
+    54→  { id: "users", icon: Users, labelKey: "admin2.users" },
+    55→  { id: "networks", icon: Wifi, labelKey: "admin2.networks" },
+    56→  { id: "networkRequests", icon: FileCheck, labelKey: "admin2.networkRequests" },
+    57→  { id: "cards", icon: CreditCard, labelKey: "admin2.cards" },
+    58→  { id: "orders", icon: Receipt, labelKey: "admin2.orders" },
+    59→  { id: "tiers", icon: Star, labelKey: "admin2.tiers" },
+    60→  { id: "starlink", icon: Satellite, labelKey: "" },
+    61→  { id: "banks", icon: Building2, labelKey: "admin2.banks" },
+    62→  { id: "telecomProviders", icon: Globe, labelKey: "admin2.telecomProviders" },
+    63→  { id: "telecomNetworks", icon: Smartphone, labelKey: "admin2.telecomNetworks" },
+    64→  { id: "telecomPackages", icon: Package, labelKey: "admin2.telecomPackages" },
+    65→  { id: "sims", icon: SimIcon, labelKey: "admin2.sims" },
+    66→  { id: "ads", icon: Megaphone, labelKey: "admin2.ads" },
+    67→  { id: "homeBanners", icon: ImageIcon, labelKey: "admin2.homeBanners" },
+    68→  { id: "gifts", icon: Gift, labelKey: "admin2.gifts" },
+    69→  { id: "commissions", icon: Banknote, labelKey: "admin2.commissions" },
+    70→  { id: "subscriptions", icon: Crown, labelKey: "admin2.subscriptions" },
+    71→  { id: "notifications", icon: Bell, labelKey: "admin2.notifications" },
+    72→  { id: "content", icon: FileText, labelKey: "admin2.content" },
+    73→  { id: "saleLocations", icon: Store, labelKey: "admin2.saleLocations" },
+    74→  { id: "settings", icon: SettingsIcon, labelKey: "admin2.settings" },
+    75→];
+    76→
+    77→const sectionVariants = {
+    78→  initial: { opacity: 0, y: 15 },
+    79→  animate: { opacity: 1, y: 0 },
+    80→  exit: { opacity: 0, y: -15 },
+    81→};
+    82→
+    83→// ═══════════════════════════════════════════════════════════════
+    84→// MAIN COMPONENT
+    85→// ═══════════════════════════════════════════════════════════════
+    86→export function AdminPanel({ onClose }: { onClose: () => void }) {
+    87→  const { t, isRTL } = useLanguage();
+    88→  const [activeTab, setActiveTab] = useState("overview");
+    89→
+    90→  const ADMIN_TABS = useMemo(() =>
+    91→    ADMIN_TAB_IDS.map(tab => ({
+    92→      ...tab,
+    93→      label: tab.id === "starlink" ? "Starlink" : t(tab.labelKey),
+    94→    })),
+    95→    [t]
+    96→  );
+    97→
+    98→  // ─── Firebase data ─────────────────────────────────────────
+    99→  const [allUsers, setAllUsers] = useState<Record<string, AppUser>>({});
+   100→  const [allCards, setAllCards] = useState<Record<string, CardItem>>({});
+   101→  const [allOrders, setAllOrders] = useState<Record<string, { userId: string; cardCode: string; price: number; status: string; createdAt: number }>>({});
+   102→  const [allBanks, setAllBanks] = useState<Record<string, BankDetail>>({});
+   103→  const [allAds, setAllAds] = useState<Record<string, Advertisement>>({});
+   104→  const [allSims, setAllSims] = useState<Record<string, SimCard>>({});
+   105→  const [allDeposits, setAllDeposits] = useState<Record<string, DepositRequest>>({});
+   106→  const [allRedeemCodes, setAllRedeemCodes] = useState<Record<string, RedeemCode>>({});
+   107→  const [allSharedRedeemCodes, setAllSharedRedeemCodes] = useState<Record<string, SharedRedeemCode>>({});
+   108→  const [fbNetworks, setFbNetworks] = useState<Record<string, NetworkItem>>({});
+   109→  const [fbTiers, setFbTiers] = useState<Record<string, TierItem>>({});
+   110→  const [subscriptionPlans, setSubscriptionPlans] = useState<Record<string, SubscriptionPlan>>({});
+   111→  const [userSubscriptions, setUserSubscriptions] = useState<Record<string, UserSubscription>>({});
+   112→  const [allBulkNotifications, setAllBulkNotifications] = useState<Record<string, BulkNotification>>({});
+   113→  const [allStarlinkProducts, setAllStarlinkProducts] = useState<Record<string, StarlinkProduct>>({});
+   114→  const [allStarlinkOrders, setAllStarlinkOrders] = useState<Record<string, StarlinkOrder>>({});
+   115→  const [allCommissionSettings, setAllCommissionSettings] = useState<Record<string, CommissionSetting>>({});
+   116→  const [allCommissionEntries, setAllCommissionEntries] = useState<Record<string, CommissionEntry>>({});
+   117→  const [allMonthlyPayouts, setAllMonthlyPayouts] = useState<Record<string, MonthlyPayout>>({});
+   118→  const [userBalances, setUserBalances] = useState<Record<string, number>>({});
+   119→  const [userHistories, setUserHistories] = useState<Record<string, { type: string; amount: number; description: string; date: number }[]>>({});
+   120→  const [hiddenSections, setHiddenSections] = useState<Record<string, boolean>>({});
+   121→
+   122→  // Telecom
+   123→  const [telecomProviders, setTelecomProviders] = useState<Record<string, TelecomProvider>>({});
+   124→  const [telecomNetworks, setTelecomNetworks] = useState<Record<string, TelecomNetwork>>({});
+   125→  const [telecomPkgs, setTelecomPkgs] = useState<Record<string, Record<string, TelecomPackage>>>({});
+   126→
+   127→  // ─── Settings ──────────────────────────────────────────────
+   128→  const [adminWhatsApp, setAdminWhatsApp] = useState(ADMIN_WHATSAPP);
+   129→  const [maxBalance, setMaxBalance] = useState(0);
+   130→  const [maintenanceMode, setMaintenanceMode] = useState(false);
+   131→  const [appDownloadUrl, setAppDownloadUrl] = useState("");
+   132→  const [latestAppVersion, setLatestAppVersion] = useState("");
+   133→  const [updateMessage, setUpdateMessage] = useState("");
+   134→
+   135→  // ─── Form states ───────────────────────────────────────────
+   136→  const [userSearch, setUserSearch] = useState("");
+   137→  const [editingUser, setEditingUser] = useState<string | null>(null);
+   138→  const [editDisplayName, setEditDisplayName] = useState("");
+   139→  const [editPhone, setEditPhone] = useState("");
+   140→  const [editEmail, setEditEmail] = useState("");
+   141→  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+   142→
+   143→  // Sale Locations
+   144→  const [saleLocations, setSaleLocations] = useState<Record<string, CardSaleLocation>>({});
+   145→  const [newLocName, setNewLocName] = useState("");
+   146→  const [newLocNetworkId, setNewLocNetworkId] = useState("");
+   147→  const [newLocProvinceId, setNewLocProvinceId] = useState("");
+   148→  const [newLocDistrict, setNewLocDistrict] = useState("");
+   149→  const [newLocExactLocation, setNewLocExactLocation] = useState("");
+   150→  const [newLocPhone, setNewLocPhone] = useState("");
+   151→
+   152→  // Card forms
+   153→  const [newCardCode, setNewCardCode] = useState("");
+   154→  const [newCardPrice, setNewCardPrice] = useState("");
+   155→  const [newCardData, setNewCardData] = useState("");
+   156→  const [newCardDuration, setNewCardDuration] = useState("");
+   157→  const [newCardTier, setNewCardTier] = useState("200");
+   158→  const [newCardNetwork, setNewCardNetwork] = useState("apple-net");
+   159→  const [bulkCardCount, setBulkCardCount] = useState("10");
+   160→  const [bulkCardNetwork, setBulkCardNetwork] = useState("apple-net");
+   161→  const [bulkCardTier, setBulkCardTier] = useState("200");
+   162→  const [cardFilterNetwork, setCardFilterNetwork] = useState("all");
+   163→  const [cardFilterTier, setCardFilterTier] = useState("all");
+   164→  const [cardFilterStatus, setCardFilterStatus] = useState("all");
+   165→  const [isAddingBulk, setIsAddingBulk] = useState(false);
+   166→  const [cardAddMode, setCardAddMode] = useState<"single" | "bulk-codes">("single");
+   167→  const [bulkCodesText, setBulkCodesText] = useState("");
+   168→  const [bulkCodesNetwork, setBulkCodesNetwork] = useState("apple-net");
+   169→  const [bulkCodesTier, setBulkCodesTier] = useState("200");
+   170→  const [bulkCodesCustom, setBulkCodesCustom] = useState(false);
+   171→  const [bulkCodesCustomPrice, setBulkCodesCustomPrice] = useState("");
+   172→  const [bulkCodesCustomData, setBulkCodesCustomData] = useState("");
+   173→  const [bulkCodesCustomDuration, setBulkCodesCustomDuration] = useState("");
+   174→  const [isAddingBulkCodes, setIsAddingBulkCodes] = useState(false);
+   175→  const [bulkCodesProgress, setBulkCodesProgress] = useState({ done: 0, total: 0 });
+   176→
+   177→  // Network forms
+   178→  const [newNetName, setNewNetName] = useState("");
+   179→  const [newNetProvinceId, setNewNetProvinceId] = useState("");
+   180→  const [newNetDistrict, setNewNetDistrict] = useState("");
+   181→  const [newNetLocation, setNewNetLocation] = useState("");
+   182→  const [newNetIP, setNewNetIP] = useState("");
+   183→  const [newNetImage, setNewNetImage] = useState("");
+   184→  const [editingNetId, setEditingNetId] = useState<string | null>(null);
+   185→  const [editNetName, setEditNetName] = useState("");
+   186→  const [editNetProvinceId, setEditNetProvinceId] = useState("");
+   187→  const [editNetDistrict, setEditNetDistrict] = useState("");
+   188→  const [editNetLocation, setEditNetLocation] = useState("");
+   189→  const [editNetIP, setEditNetIP] = useState("");
+   190→  const [editNetImage, setEditNetImage] = useState("");
+   191→  const [editNetManager, setEditNetManager] = useState("");
+   192→
+   193→  // Tier forms
+   194→  const [newTierPrice, setNewTierPrice] = useState("");
+   195→  const [newTierData, setNewTierData] = useState("");
+   196→  const [newTierDuration, setNewTierDuration] = useState("");
+   197→  const [newTierIcon, setNewTierIcon] = useState("");
+   198→  const [editingTier, setEditingTier] = useState<string | null>(null);
+   199→  const [editTierPrice, setEditTierPrice] = useState("");
+   200→  const [editTierData, setEditTierData] = useState("");
+   201→  const [editTierDuration, setEditTierDuration] = useState("");
+   202→  const [editTierIcon, setEditTierIcon] = useState("");
+   203→
+   204→  // Starlink forms
+   205→  const [newStarName, setNewStarName] = useState("");
+   206→  const [newStarDesc, setNewStarDesc] = useState("");
+   207→  const [newStarPrice, setNewStarPrice] = useState("");
+   208→  const [newStarQty, setNewStarQty] = useState("");
+   209→  const [newStarImage, setNewStarImage] = useState("");
+   210→  const [newStarDownload, setNewStarDownload] = useState("");
+   211→  const [newStarUpload, setNewStarUpload] = useState("");
+   212→  const [newStarLatency, setNewStarLatency] = useState("");
+   213→  const [newStarCoverage, setNewStarCoverage] = useState("");
+   214→  const [editingStar, setEditingStar] = useState<string | null>(null);
+   215→
+   216→  // Bank forms
+   217→  const [newBankName, setNewBankName] = useState("");
+   218→  const [newBankAccount, setNewBankAccount] = useState("");
+   219→  const [newBankNumber, setNewBankNumber] = useState("");
+   220→
+   221→  // Telecom Provider forms
+   222→  const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
+   223→  const [providerForm, setProviderForm] = useState({ name: "", nameEn: "", apiUrl: "", apiKey: "", method: "POST" as "POST" | "GET", headers: "{}", bodyTemplate: "{}", successField: "", messageField: "", transactionIdField: "", balanceCheckUrl: "", isActive: true });
+   224→  const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
+   225→
+   226→  // Telecom Network forms
+   227→  const [editingNetworkId, setEditingNetworkId] = useState<string | null>(null);
+   228→  const [networkForm, setNetworkForm] = useState({ name: "", nameEn: "", color: "#1B7A3D", bgColor: "#E8F5E9", icon: "📱", prefixes: "", isActive: true, providerId: "", subCategories: "" });
+   229→  const [expandedNetwork, setExpandedNetwork] = useState<string | null>(null);
+   230→
+   231→  // Telecom Package forms
+   232→  const [editingPkgId, setEditingPkgId] = useState<string | null>(null);
+   233→  const [pkgForm, setPkgForm] = useState({ name: "", nameEn: "", price: "", wholesalePrice: "", description: "", descriptionEn: "", dataAmount: "", duration: "", durationUnit: "day", type: "recharge" as "recharge" | "internet" | "voice", isActive: true, subCategoryId: "", productCode: "", networkId: "" });
+   234→  const [pkgFilterNetwork, setPkgFilterNetwork] = useState("all");
+   235→  const [pkgFilterSubCat, setPkgFilterSubCat] = useState("all");
+   236→  const [pkgFilterType, setPkgFilterType] = useState("all");
+   237→
+   238→  // SIM forms
+   239→  const [newSimName, setNewSimName] = useState("");
+   240→  const [newSimPrice, setNewSimPrice] = useState("");
+   241→  const [newSimDesc, setNewSimDesc] = useState("");
+   242→  const [newSimImage, setNewSimImage] = useState("");
+   243→
+   244→  // Ad forms
+   245→  const [newAdTitle, setNewAdTitle] = useState("");
+   246→  const [newAdDesc, setNewAdDesc] = useState("");
+   247→  const [newAdImage, setNewAdImage] = useState("");
+   248→
+   249→  // Home Banner forms
+   250→  const [newBannerTitle, setNewBannerTitle] = useState("");
+   251→  const [newBannerDesc, setNewBannerDesc] = useState("");
+   252→  const [newBannerImage, setNewBannerImage] = useState("");
+   253→  const [newBannerLink, setNewBannerLink] = useState("");
+   254→  const [newBannerOrder, setNewBannerOrder] = useState("0");
+   255→  const [allHomeBanners, setAllHomeBanners] = useState<Record<string, { id: string; title: string; description: string; imageUrl: string; linkUrl?: string; isActive: boolean; order: number; createdAt: number }>>({});
+   256→
+   257→  // Gift/redeem code forms
+   258→  const [redeemCodeAmount, setRedeemCodeAmount] = useState("");
+   259→  const [redeemCodeCount, setRedeemCodeCount] = useState("1");
+   260→  const [lastGeneratedCodes, setLastGeneratedCodes] = useState<{ code: string; amount: number }[]>([]);
+   261→  const [isGenerating, setIsGenerating] = useState(false);
+   262→  const [sharedCodeAmount, setSharedCodeAmount] = useState("");
+   263→  const [sharedCodeMaxUses, setSharedCodeMaxUses] = useState("");
+   264→  const [sharedCodeDesc, setSharedCodeDesc] = useState("");
+   265→
+   266→  // Subscription forms
+   267→  const [newPlanName, setNewPlanName] = useState("");
+   268→  const [newPlanPrice, setNewPlanPrice] = useState("");
+   269→  const [newPlanDesc, setNewPlanDesc] = useState("");
+   270→  const [newPlanDuration, setNewPlanDuration] = useState("");
+   271→
+   272→  // Notification forms
+   273→  const [bulkTitle, setBulkTitle] = useState("");
+   274→  const [bulkMessage, setBulkMessage] = useState("");
+   275→  const [isSendingBulk, setIsSendingBulk] = useState(false);
+   276→
+   277→  // App content
+   278→  const [appContent, setAppContent] = useState<Record<string, string>>({});
+   279→
+   280→  // Balance management forms
+   281→  const [balanceAction, setBalanceAction] = useState<"credit" | "debit">("credit");
+   282→  const [balanceUserId, setBalanceUserId] = useState("");
+   283→  const [balanceAmount, setBalanceAmount] = useState("");
+   284→  const [balanceDescription, setBalanceDescription] = useState("");
+   285→  const [balanceSearch, setBalanceSearch] = useState("");
+   286→  const [isProcessingBalance, setIsProcessingBalance] = useState(false);
+   287→
+   288→  // Network submissions forms
+   289→  const [allNetworkSubmissions, setAllNetworkSubmissions] = useState<Record<string, NetworkSubmission>>({});
+   290→  const [rejectionReason, setRejectionReason] = useState("");
+   291→  const [rejectingSubmissionId, setRejectingSubmissionId] = useState<string | null>(null);
+   292→
+   293→  // ─── Firebase listeners ────────────────────────────────────
+   294→  useEffect(() => {
+   295→    const unsubs: (() => void)[] = [];
+   296→    const paths: { path: string; setter: React.Dispatch<React.SetStateAction<Record<string, never>>> }[] = [
+   297→      { path: "users", setter: setAllUsers as React.Dispatch<React.SetStateAction<Record<string, never>>> },
+   298→      { path: "cards", setter: setAllCards as React.Dispatch<React.SetStateAction<Record<string, never>>> },
+   299→      { path: "orders", setter: setAllOrders as React.Dispatch<React.SetStateAction<Record<string, never>>> },
+   300→      { path: "bankDetails", setter: setAllBanks as React.Dispatch<React.SetStateAction<Record<string, never>>> },
+   301→      { path: "advertisements", setter: setAllAds as React.Dispatch<React.SetStateAction<Record<string, never>>> },
+   302→      { path: "simCards", setter: setAllSims as React.Dispatch<React.SetStateAction<Record<string, never>>> },
+   303→      { path: "depositRequests", setter: setAllDeposits as React.Dispatch<React.SetStateAction<Record<string, never>>> },
+   304→      { path: "redeemCodes", setter: setAllRedeemCodes as React.Dispatch<React.SetStateAction<Record<string, never>>> },
+   305→    ];
+   306→    paths.forEach(({ path, setter }) => {
+   307→      const unsub = onValue(ref(db, path), (snap) => setter(snap.val() || {}));
+   308→      unsubs.push(unsub);
+   309→    });
+   310→
+   311→    const netUnsub = onValue(ref(db, "networks"), async (snap) => {
+   312→      const data = snap.val();
+   313→      if (!data) {
+   314→        for (const n of DEFAULT_NETWORKS) {
+   315→          await set(ref(db, `networks/${n.id}`), { ...n, ownerId: null, ownerName: null, ownerPhone: null, location: null, createdAt: Date.now() });
+   316→        }
+   317→      } else {
+   318→        setFbNetworks(data);
+   319→      }
+   320→    });
+   321→    unsubs.push(netUnsub);
+   322→
+   323→    const tierUnsub = onValue(ref(db, "tiers"), async (snap) => {
+   324→      const data = snap.val();
+   325→      if (!data) {
+   326→        for (const t of DEFAULT_TIERS) {
+   327→          await set(ref(db, `tiers/${t.tier}`), { ...t, id: t.tier, createdAt: Date.now() });
+   328→        }
+   329→      } else {
+   330→        setFbTiers(data);
+   331→      }
+   332→    });
+   333→    unsubs.push(tierUnsub);
+   334→
+   335→    const settingsUnsub = onValue(ref(db, "settings"), (snap) => {
+   336→      const data = snap.val();
+   337→      if (data) {
+   338→        if (data.adminWhatsApp) setAdminWhatsApp(data.adminWhatsApp);
+   339→        if (data.maxBalance !== undefined) setMaxBalance(data.maxBalance);
+   340→        if (data.maintenanceMode) setMaintenanceMode(data.maintenanceMode);
+   341→        if (data.appDownloadUrl) setAppDownloadUrl(data.appDownloadUrl);
+   342→        if (data.latestAppVersion) setLatestAppVersion(data.latestAppVersion);
+   343→        if (data.updateMessage) setUpdateMessage(data.updateMessage);
+   344→      }
+   345→    });
+   346→    unsubs.push(settingsUnsub);
+   347→
+   348→    const plansUnsub = onValue(ref(db, "subscriptionPlans"), (snap) => setSubscriptionPlans(snap.val() || {}));
+   349→    unsubs.push(plansUnsub);
+   350→    const subsUnsub = onValue(ref(db, "userSubscriptions"), (snap) => setUserSubscriptions(snap.val() || {}));
+   351→    unsubs.push(subsUnsub);
+   352→    const bulkUnsub = onValue(ref(db, "bulkNotifications"), (snap) => setAllBulkNotifications(snap.val() || {}));
+   353→    unsubs.push(bulkUnsub);
+   354→    const starUnsub = onValue(ref(db, "starlinkProducts"), (snap) => setAllStarlinkProducts(snap.val() || {}));
+   355→    unsubs.push(starUnsub);
+   356→    const starOrdUnsub = onValue(ref(db, "starlinkOrders"), (snap) => setAllStarlinkOrders(snap.val() || {}));
+   357→    unsubs.push(starOrdUnsub);
+   358→    const commSetUnsub = onValue(ref(db, "commissionSettings"), (snap) => setAllCommissionSettings(snap.val() || {}));
+   359→    unsubs.push(commSetUnsub);
+   360→    const commEntryUnsub = onValue(ref(db, "commissionEntries"), (snap) => setAllCommissionEntries(snap.val() || {}));
+   361→    unsubs.push(commEntryUnsub);
+   362→    const payoutUnsub = onValue(ref(db, "monthlyPayouts"), (snap) => setAllMonthlyPayouts(snap.val() || {}));
+   363→    unsubs.push(payoutUnsub);
+   364→    const sharedCodesUnsub = onValue(ref(db, "sharedRedeemCodes"), (snap) => setAllSharedRedeemCodes(snap.val() || {}));
+   365→    unsubs.push(sharedCodesUnsub);
+   366→    const hiddenUnsub = onValue(ref(db, "settings/hiddenSections"), (snap) => setHiddenSections(snap.val() || {}));
+   367→    unsubs.push(hiddenUnsub);
+   368→
+   369→    const creditUnsub = onValue(ref(db, "credit"), (snap) => {
+   370→      const data = snap.val() || {};
+   371→      const balances: Record<string, number> = {};
+   372→      const histories: Record<string, { type: string; amount: number; description: string; date: number }[]> = {};
+   373→      Object.entries(data).forEach(([uid, val]: [string, unknown]) => {
+   374→        const creditData = val as Record<string, unknown>;
+   375→        balances[uid] = (creditData.amount as number) || 0;
+   376→        if (creditData.history) {
+   377→          histories[uid] = Object.values(creditData.history) as { type: string; amount: number; description: string; date: number }[];
+   378→        }
+   379→      });
+   380→      setUserBalances(balances);
+   381→      setUserHistories(histories);
+   382→    });
+   383→    unsubs.push(creditUnsub);
+   384→
+   385→    const contentUnsub = onValue(ref(db, "appContent"), (snap) => setAppContent(snap.val() || {}));
+   386→    unsubs.push(contentUnsub);
+   387→
+   388→    const homeBannersUnsub = onValue(ref(db, "homeBanners"), (snap) => setAllHomeBanners(snap.val() || {}));
+   389→    unsubs.push(homeBannersUnsub);
+   390→
+   391→    const netSubUnsub = onValue(ref(db, "networkSubmissions"), (snap) => setAllNetworkSubmissions(snap.val() || {}));
+   392→    unsubs.push(netSubUnsub);
+   393→
+   394→    const saleLocUnsub = onValue(ref(db, "cardSaleLocations"), (snap) => setSaleLocations(snap.val() || {}));
+   395→    unsubs.push(saleLocUnsub);
+   396→
+   397→    const provUnsub = onValue(ref(db, "telecomProviders"), (snap) => {
+   398→      const data = snap.val();
+   399→      if (data) setTelecomProviders(data as Record<string, TelecomProvider>);
+   400→      else setTelecomProviders({});
+   401→    });
+   402→    unsubs.push(provUnsub);
+   403→
+   404→    const netTUnsub = onValue(ref(db, "telecomNetworks"), (snap) => {
+   405→      const data = snap.val();
+   406→      if (data) setTelecomNetworks(data as Record<string, TelecomNetwork>);
+   407→      else setTelecomNetworks({});
+   408→    });
+   409→    unsubs.push(netTUnsub);
+   410→
+   411→    const pkgUnsub = onValue(ref(db, "telecomPackages"), (snap) => {
+   412→      const data = snap.val();
+   413→      if (data) setTelecomPkgs(data as Record<string, Record<string, TelecomPackage>>);
+   414→      else setTelecomPkgs({});
+   415→    });
+   416→    unsubs.push(pkgUnsub);
+   417→
+   418→    return () => unsubs.forEach(u => u());
+   419→  }, []);
+   420→
+   421→  // ─── Derived lists ─────────────────────────────────────────
+   422→  const usersList = Object.entries(allUsers).map(([id, val]) => ({ id, ...val }));
+   423→  const cardsList = Object.entries(allCards).map(([id, val]) => ({ id, ...val }));
+   424→  const banksList = Object.entries(allBanks).map(([id, val]) => ({ id, ...val }));
+   425→  const adsList = Object.entries(allAds).map(([id, val]) => ({ id, ...val }));
+   426→  const simsList = Object.entries(allSims).map(([id, val]) => ({ id, ...val }));
+   427→  const telecomProvidersList = Object.entries(telecomProviders).map(([id, val]) => ({ id, ...val }));
+   428→  const telecomNetworksList = Object.entries(telecomNetworks).map(([id, val]) => ({ id, ...val }));
+   429→  const telecomPkgsFlat = Object.entries(telecomPkgs).flatMap(([netId, pkgs]) =>
+   430→    Object.entries(pkgs || {}).map(([pkgId, val]) => ({ id: pkgId, networkId: netId, ...val }))
+   431→  );
+   432→  const depositsList = Object.entries(allDeposits).map(([id, val]) => ({ id, ...val })).sort((a: DepositRequest, b: DepositRequest) => (b.createdAt || 0) - (a.createdAt || 0));
+   433→  const pendingDeposits = depositsList.filter(d => d.status === "pending");
+   434→  const redeemCodesList = Object.entries(allRedeemCodes).map(([id, val]) => ({ id, ...val })).sort((a: RedeemCode, b: RedeemCode) => (b.createdAt || 0) - (a.createdAt || 0));
+   435→  const sharedCodesList = Object.entries(allSharedRedeemCodes).map(([id, val]) => ({ id, ...val }));
+   436→  const plansList = Object.entries(subscriptionPlans).map(([id, val]) => ({ id, ...val }));
+   437→  const subsList = Object.entries(userSubscriptions).map(([id, val]) => ({ id, ...val }));
+   438→  const bulkNotifList = Object.entries(allBulkNotifications).map(([id, val]) => ({ id, ...val })).sort((a: BulkNotification, b: BulkNotification) => (b.sentAt || 0) - (a.sentAt || 0));
+   439→  const starProductsList = Object.entries(allStarlinkProducts).map(([id, val]) => ({ id, ...val }));
+   440→  const starOrdersList = Object.entries(allStarlinkOrders).map(([id, val]) => ({ id, ...val })).sort((a: StarlinkOrder, b: StarlinkOrder) => (b.createdAt || 0) - (a.createdAt || 0));
+   441→  const commSettingsList = Object.entries(allCommissionSettings).map(([id, val]) => ({ id, ...val }));
+   442→  const commEntriesList = Object.entries(allCommissionEntries).map(([id, val]) => ({ id, ...val })).sort((a: CommissionEntry, b: CommissionEntry) => (b.soldAt || 0) - (a.soldAt || 0));
+   443→  const payoutList = Object.entries(allMonthlyPayouts).map(([id, val]) => ({ id, ...val }));
+   444→
+   445→  const networkSubmissionsList = Object.entries(allNetworkSubmissions).map(([id, val]) => ({ id, ...val })).sort((a: NetworkSubmission, b: NetworkSubmission) => (b.createdAt || 0) - (a.createdAt || 0));
+   446→  const pendingNetworkSubmissions = networkSubmissionsList.filter(s => s.status === "pending");
+   447→  const approvedNetworkSubmissions = networkSubmissionsList.filter(s => s.status === "approved");
+   448→  const rejectedNetworkSubmissions = networkSubmissionsList.filter(s => s.status === "rejected");
+   449→
+   450→  const networksList = Object.keys(fbNetworks).length > 0
+   451→    ? Object.entries(fbNetworks).map(([id, val]) => ({ id, ...val }))
+   452→    : DEFAULT_NETWORKS.map(n => ({ ...n, ownerId: null, ownerName: null, createdAt: 0 }));
+   453→
+   454→  const tiersList = Object.keys(fbTiers).length > 0
+   455→    ? Object.entries(fbTiers).map(([id, val]) => ({ id, ...val }))
+   456→    : DEFAULT_TIERS.map(t => ({ ...t, id: t.tier, createdAt: 0 }));
+   457→
+   458→  const filteredUsers = userSearch
+   459→    ? usersList.filter(u => (u.displayName || "").includes(userSearch) || (u.email || "").includes(userSearch) || (u.phone || "").includes(userSearch))
+   460→    : usersList;
+   461→
+   462→  // Card filters
+   463→  const filteredCards = cardsList.filter(c => {
+   464→    if (cardFilterNetwork !== "all" && c.network !== cardFilterNetwork) return false;
+   465→    if (cardFilterTier !== "all" && c.tier !== cardFilterTier) return false;
+   466→    if (cardFilterStatus === "available" && c.isUsed) return false;
+   467→    if (cardFilterStatus === "sold" && !c.isUsed) return false;
+   468→    return true;
+   469→  });
+   470→
+   471→  const soldCards = cardsList.filter(c => c.isUsed);
+   472→  const totalRevenue = soldCards.reduce((s, c) => s + (c.price || 0), 0);
+   473→
+   474→  // ─── Actions ───────────────────────────────────────────────
+   475→  const approveDeposit = async (depId: string, dep: DepositRequest) => {
+   476→    try {
+   477→      const amountRef = ref(db, `credit/${dep.userId}/amount`);
+   478→      let actualAmount = dep.amount;
+   479→      const result = await runTransaction(amountRef, (cur) => {
+   480→        const bal = (cur || 0) as number;
+   481→        let newBal = bal + dep.amount;
+   482→        if (maxBalance > 0 && newBal > maxBalance) {
+   483→          actualAmount = Math.max(maxBalance - bal, 0);
+   484→          if (actualAmount <= 0) return bal;
+   485→          newBal = maxBalance;
+   486→        }
+   487→        return newBal;
+   488→      });
+   489→      if (!result.committed || actualAmount <= 0) {
+   490→        toast.error(`${t("admin2.balanceCeilingMsg")} (${maxBalance} ${t("admin2.yer")})`);
+   491→        return;
+   492→      }
+   493→      await update(ref(db, `credit/${dep.userId}`), { updatedAt: Date.now() });
+   494→      const histRef = push(ref(db, `credit/${dep.userId}/history`));
+   495→      await set(histRef, { type: "deposit", amount: actualAmount, description: `${t("admin2.depositTransfer")} - ${dep.bankName || "تحويل"}`, date: Date.now() });
+   496→      await update(ref(db, `depositRequests/${depId}`), { status: "approved", reviewedAt: Date.now(), reviewedBy: auth.currentUser?.uid });
+   497→      const notifRef = push(ref(db, `notifications/${dep.userId}`));
+   498→      await set(notifRef, { type: "deposit_approved", title: t("admin2.depositApprovedTitle"), message: `${t("admin2.addedToYourAccount")} ${actualAmount} ${t("admin2.yer")} ${t("admin2.toYourAccount")}`, isRead: false, createdAt: Date.now() });
+   499→      toast.success(`${t("admin2.depositApprovedAmount")} ${actualAmount} ${t("admin2.yer")}`);
+   500→    } catch { toast.error(t("admin2.errorDeposit")); }
+   501→  };
+   502→
+   503→  const rejectDeposit = async (depId: string, dep: DepositRequest, reason?: string) => {
+   504→    try {
+   505→      await update(ref(db, `depositRequests/${depId}`), { status: "rejected", rejectionReason: reason || t("admin2.rejectedDefault"), reviewedAt: Date.now(), reviewedBy: auth.currentUser?.uid });
+   506→      const notifRef = push(ref(db, `notifications/${dep.userId}`));
+   507→      await set(notifRef, { type: "deposit_rejected", title: t("admin2.depositRejectedTitle"), message: `${t("admin2.depositRejectedTitle")} ${dep.amount} ${t("admin2.yer")}${reason ? ` - ${reason}` : ""}`, isRead: false, createdAt: Date.now() });
+   508→      toast.success(t("admin2.depositRejectedMsg"));
+   509→    } catch { toast.error(t("admin2.error")); }
+   510→  };
+   511→
+   512→  const addSingleCard = async () => {
+   513→    if (!newCardCode || !newCardPrice || !newCardData || !newCardDuration || !newCardNetwork) {
+   514→      toast.error(t("admin2.fillAllFields")); return;
+   515→    }
+   516→    try {
+   517→      const cardRef = push(ref(db, "cards"));
+   518→      await set(cardRef, { code: newCardCode, price: Number(newCardPrice), data: newCardData, duration: Number(newCardDuration), isUsed: false, usedBy: null, usedAt: null, tier: newCardTier, network: newCardNetwork, createdAt: Date.now() });
+   519→      toast.success(t("admin2.addedCardSuccess"));
+   520→      setNewCardCode(""); setNewCardPrice(""); setNewCardData(""); setNewCardDuration("");
+   521→    } catch { toast.error(t("admin2.error")); }
+   522→  };
+   523→
+   524→  const addBulkCards = async () => {
+   525→    const count = Number(bulkCardCount);
+   526→    if (!count || count < 1 || count > 500) { toast.error(t("admin2.cardCount")); return; }
+   527→    if (!bulkCardNetwork || !bulkCardTier) { toast.error(t("admin2.selectNetworkTier")); return; }
+   528→    const tierInfo = tiersList.find(ti => ti.tier === bulkCardTier);
+   529→    if (!tierInfo) { toast.error(t("admin2.invalidTier")); return; }
+   530→
+   531→    setIsAddingBulk(true);
+   532→    let added = 0;
+   533→    try {
+   534→      for (let i = 0; i < count; i++) {
+   535→        const cardRef = push(ref(db, "cards"));
+   536→        const pushId = cardRef.key!.substring(0, 6).toUpperCase();
+   537→        const code = `AP-${pushId}-${String(i + 1).padStart(3, "0")}`;
+   538→        await set(cardRef, {
+   539→          code, price: tierInfo.price, data: tierInfo.data, duration: tierInfo.duration,
+   540→          isUsed: false, usedBy: null, usedAt: null, tier: bulkCardTier, network: bulkCardNetwork, createdAt: Date.now(),
+   541→        });
+   542→        added++;
+   543→      }
+   544→      toast.success(`${t("admin2.addedCardsWithCount")} ${added} ${t("admin2.cardsSuccess")}`);
+   545→    } catch { toast.error(t("admin2.errorAdding")); }
+   546→    setIsAddingBulk(false);
+   547→  };
+   548→
+   549→  const addBulkCodesByPasting = async () => {
+   550→    const codes = bulkCodesText.split("\n").map(c => c.trim()).filter(c => c.length > 0);
+   551→    if (codes.length === 0) { toast.error(t("admin2.enterCardCodes")); return; }
+   552→    if (!bulkCodesNetwork) { toast.error(t("admin2.selectNetwork")); return; }
+   553→
+   554→    let price: number, data: string, duration: number, tier: string;
+   555→
+   556→    if (bulkCodesCustom) {
+   557→      if (!bulkCodesCustomPrice || !bulkCodesCustomData || !bulkCodesCustomDuration) {
+   558→        toast.error(t("admin2.fillCustomFields")); return;
+   559→      }
+   560→      price = Number(bulkCodesCustomPrice);
+   561→      data = bulkCodesCustomData;
+   562→      duration = Number(bulkCodesCustomDuration);
+   563→      tier = `${price}-custom`;
+   564→    } else {
+   565→      if (!bulkCodesTier) { toast.error(t("admin2.selectTier")); return; }
+   566→      const tierInfo = tiersList.find(ti => ti.tier === bulkCodesTier);
+   567→      if (!tierInfo) { toast.error(t("admin2.invalidTier")); return; }
+   568→      price = tierInfo.price;
+   569→      data = tierInfo.data;
+   570→      duration = tierInfo.duration;
+   571→      tier = bulkCodesTier;
+   572→    }
+   573→
+   574→    setIsAddingBulkCodes(true);
+   575→    setBulkCodesProgress({ done: 0, total: codes.length });
+   576→    let added = 0;
+   577→    try {
+   578→      for (let i = 0; i < codes.length; i++) {
+   579→        const cardRef = push(ref(db, "cards"));
+   580→        await set(cardRef, {
+   581→          code: codes[i], price, data, duration,
+   582→          isUsed: false, usedBy: null, usedAt: null, tier, network: bulkCodesNetwork, createdAt: Date.now(),
+   583→        });
+   584→        added++;
+   585→        setBulkCodesProgress({ done: added, total: codes.length });
+   586→      }
+   587→      toast.success(`${t("admin2.addedCardsWithCount")} ${added} ${t("admin2.cardsSuccess")}`);
+   588→      setBulkCodesText("");
+   589→    } catch { toast.error(t("admin2.errorAdding")); }
+   590→    setIsAddingBulkCodes(false);
+   591→    setBulkCodesProgress({ done: 0, total: 0 });
+   592→  };
+   593→
+   594→  const deleteCard = async (id: string) => {
+   595→    if (deleteConfirm === id) {
+   596→      try { await remove(ref(db, `cards/${id}`)); toast.success(t("admin2.deletedCard")); setDeleteConfirm(null); }
+   597→      catch { toast.error(t("admin2.error")); }
+   598→    } else {
+   599→      setDeleteConfirm(id);
+   600→      setTimeout(() => setDeleteConfirm(null), 3000);
+   601→    }
+   602→  };
+   603→
+   604→  const addNetwork = async () => {
+   605→    if (!newNetName.trim()) { toast.error(t("admin2.enterNetworkName")); return; }
+   606→    if (!/^[a-zA-Z0-9\s\-]+$/.test(newNetName.trim())) {
+   607→      toast.error(t("admin2.networkNameEnglish"));
+   608→      return;
+   609→    }
+   610→    const id = newNetName.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "") + "-net";
+   611→    if (networksList.find(n => n.id === id)) { toast.error(t("admin2.networkExists")); return; }
+   612→    try {
+   613→      const provinceObj = PROVINCES.find(p => p.id === newNetProvinceId);
+   614→      await set(ref(db, `networks/${id}`), {
+   615→        name: newNetName.trim(), color: "#1B7A3D", bgColor: "#1B7A3D1A", emoji: "📶",
+   616→        ownerId: null, ownerName: null, ownerPhone: null,
+   617→        location: newNetDistrict || provinceObj?.name || null,
+   618→        provinceId: newNetProvinceId || null, provinceName: provinceObj?.name || null,
+   619→        district: newNetDistrict || null, exactLocation: newNetLocation || null,
+   620→        connectionIP: newNetIP || null, imageBase64: newNetImage || null, createdAt: Date.now(),
+   621→      });
+   622→      toast.success(`${t("admin2.addedNetwork")} ${newNetName}`);
+   623→      setNewNetName(""); setNewNetProvinceId(""); setNewNetDistrict(""); setNewNetLocation(""); setNewNetIP(""); setNewNetImage("");
+   624→    } catch { toast.error(t("admin2.error")); }
+   625→  };
+   626→
+   627→  const startEditNet = (net: NetworkItem & { id: string }) => {
+   628→    setEditingNetId(net.id);
+   629→    setEditNetName(net.name || "");
+   630→    setEditNetProvinceId(net.provinceId || "");
+   631→    setEditNetDistrict(net.district || "");
+   632→    setEditNetLocation(net.exactLocation || "");
+   633→    setEditNetIP(net.connectionIP || "");
+   634→    setEditNetImage(net.imageBase64 || "");
+   635→    setEditNetManager(net.ownerId || "");
+   636→  };
+   637→
+   638→  const saveEditNet = async (netId: string) => {
+   639→    if (!editNetName.trim()) { toast.error(t("admin2.networkNameRequired")); return; }
+   640→    if (!/^[a-zA-Z0-9\s\-]+$/.test(editNetName.trim())) {
+   641→      toast.error(t("admin2.networkNameEnglish"));
+   642→      return;
+   643→    }
+   644→    try {
+   645→      const provinceObj = PROVINCES.find(p => p.id === editNetProvinceId);
+   646→      const updates: Record<string, unknown> = {
+   647→        name: editNetName.trim(), provinceId: editNetProvinceId || null, provinceName: provinceObj?.name || null,
+   648→        district: editNetDistrict || null, exactLocation: editNetLocation || null,
+   649→        connectionIP: editNetIP?.trim() || null, imageBase64: editNetImage || null,
+   650→        location: editNetDistrict || provinceObj?.name || null,
+   651→      };
+   652→      // Assign manager
+   653→      if (editNetManager) {
+   654→        const mgr = allUsers[editNetManager];
+   655→        updates.ownerId = editNetManager;
+   656→        updates.ownerName = mgr?.displayName || mgr?.email || t("admin2.user2");
+   657→        await update(ref(db, `users/${editNetManager}`), { role: "network_manager", managedNetwork: netId });
+   658→      } else {
+   659→        // Remove current manager if cleared
+   660→        const curNet = fbNetworks[netId];
+   661→        if (curNet?.ownerId) {
+   662→          await update(ref(db, `users/${curNet.ownerId}`), { role: "user", managedNetwork: "" });
+   663→        }
+   664→        updates.ownerId = null;
+   665→        updates.ownerName = null;
+   666→      }
+   667→      await update(ref(db, `networks/${netId}`), updates);
+   668→      toast.success(t("admin2.updatedNetwork"));
+   669→      setEditingNetId(null);
+   670→    } catch { toast.error(t("admin2.error")); }
+   671→  };
+   672→
+   673→  const deleteNetwork = async (id: string) => {
+   674→    if (deleteConfirm === `net-${id}`) {
+   675→      try { await remove(ref(db, `networks/${id}`)); toast.success(t("admin2.deletedNetwork")); setDeleteConfirm(null); }
+   676→      catch { toast.error(t("admin2.error")); }
+   677→    } else {
+   678→      setDeleteConfirm(`net-${id}`);
+   679→      setTimeout(() => setDeleteConfirm(null), 3000);
+   680→    }
+   681→  };
+   682→
+   683→  const addTier = async () => {
+   684→    if (!newTierPrice || !newTierData || !newTierDuration) { toast.error(t("admin2.fillAllFields")); return; }
+   685→    const tierKey = newTierPrice.trim();
+   686→    if (tiersList.find(ti => ti.tier === tierKey)) { toast.error(t("admin2.tierExists")); return; }
+   687→    try {
+   688→      await set(ref(db, `tiers/${tierKey}`), { tier: tierKey, price: Number(newTierPrice), data: newTierData.trim(), duration: Number(newTierDuration), icon: newTierIcon || "🟢", createdAt: Date.now() });
+   689→      toast.success(`${t("admin2.addedTier")} ${newTierPrice} ${t("admin2.yer")}`);
+   690→      setNewTierPrice(""); setNewTierData(""); setNewTierDuration(""); setNewTierIcon("");
+   691→    } catch { toast.error(t("admin2.error")); }
+   692→  };
+   693→
+   694→  const startEditTier = (tier: TierItem & { id: string }) => {
+   695→    setEditingTier(tier.id);
+   696→    setEditTierPrice(String(tier.price));
+   697→    setEditTierData(tier.data);
+   698→    setEditTierDuration(String(tier.duration));
+   699→    setEditTierIcon(tier.icon);
+   700→  };
+   701→
+   702→  const saveEditTier = async (tierKey: string) => {
+   703→    if (!editTierPrice || !editTierData || !editTierDuration) { toast.error(t("admin2.fillAllFields")); return; }
+   704→    try {
+   705→      await update(ref(db, `tiers/${tierKey}`), { price: Number(editTierPrice), data: editTierData.trim(), duration: Number(editTierDuration), icon: editTierIcon || "🟢" });
+   706→      toast.success(t("admin2.updatedTier"));
+   707→      setEditingTier(null);
+   708→    } catch { toast.error(t("admin2.error")); }
+   709→  };
+   710→
+   711→  const deleteTier = async (tier: string) => {
+   712→    if (deleteConfirm === `tier-${tier}`) {
+   713→      try { await remove(ref(db, `tiers/${tier}`)); toast.success(t("admin2.deletedTier")); setDeleteConfirm(null); }
+   714→      catch { toast.error(t("admin2.error")); }
+   715→    } else {
+   716→      setDeleteConfirm(`tier-${tier}`);
+   717→      setTimeout(() => setDeleteConfirm(null), 3000);
+   718→    }
+   719→  };
+   720→
+   721→  const changeUserRole = async (uid: string, newRole: "user" | "admin" | "network_manager", managedNetwork?: string) => {
+   722→    try {
+   723→      const updates: Record<string, unknown> = { role: newRole };
+   724→      if (newRole === "network_manager" && managedNetwork) {
+   725→        updates.managedNetwork = managedNetwork;
+   726→      } else {
+   727→        updates.managedNetwork = "";
+   728→      }
+   729→      await update(ref(db, `users/${uid}`), updates);
+   730→      // If assigning as manager, update network owner
+   731→      if (newRole === "network_manager" && managedNetwork) {
+   732→        const u = allUsers[uid];
+   733→        await update(ref(db, `networks/${managedNetwork}`), { ownerId: uid, ownerName: u?.displayName || u?.email || t("admin2.user2") });
+   734→      }
+   735→      toast.success(t("admin2.roleChanged2"));
+   736→    } catch { toast.error(t("admin2.error")); }
+   737→  };
+   738→
+   739→  const toggleUserActive = async (uid: string, isActive: boolean) => {
+   740→    try {
+   741→      await update(ref(db, `users/${uid}`), { isActive: !isActive });
+   742→      toast.success(isActive ? t("admin2.userDeactivated2") : t("admin2.userActivated2"));
+   743→    } catch { toast.error(t("admin2.error")); }
+   744→  };
+   745→
+   746→  // Network submission approve/reject
+   747→  const approveNetworkSubmission = async (subId: string, sub: NetworkSubmission) => {
+   748→    try {
+   749→      // Create new network from submission data
+   750→      const netId = sub.networkName.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "") + "-net";
+   751→      if (networksList.find(n => n.id === netId)) {
+   752→        toast.error(t("admin2.networkNameExists"));
+   753→        return;
+   754→      }
+   755→      const provinceObj = PROVINCES.find(p => p.id === sub.provinceId);
+   756→      await set(ref(db, `networks/${netId}`), {
+   757→        name: sub.networkName.trim(),
+   758→        color: "#1B7A3D",
+   759→        bgColor: "#1B7A3D1A",
+   760→        emoji: "📶",
+   761→        ownerId: sub.userId,
+   762→        ownerName: sub.userName || t("admin2.user2"),
+   763→        ownerPhone: sub.userPhone || null,
+   764→        location: sub.district || provinceObj?.name || null,
+   765→        provinceId: sub.provinceId || null,
+   766→        provinceName: provinceObj?.name || null,
+   767→        district: sub.district || null,
+   768→        exactLocation: sub.exactLocation || null,
+   769→        connectionIP: null,
+   770→        imageBase64: sub.imageBase64 || null,
+   771→        networkType: sub.networkType || null,
+   772→        coverage: sub.coverage || null,
+   773→        speed: sub.speed || null,
+   774→        createdAt: Date.now(),
+   775→      });
+   776→
+   777→      // Update submission status
+   778→      await update(ref(db, `networkSubmissions/${subId}`), {
+   779→        status: "approved",
+   780→        reviewedAt: Date.now(),
+   781→        reviewedBy: auth.currentUser?.uid,
+   782→        assignedNetworkId: netId,
+   783→      });
+   784→
+   785→      // Assign the submitter as network_manager
+   786→      await update(ref(db, `users/${sub.userId}`), {
+   787→        role: "network_manager",
+   788→        managedNetwork: netId,
+   789→      });
+   790→
+   791→      // Send notification to the user
+   792→      const notifRef = push(ref(db, `notifications/${sub.userId}`));
+   793→      await set(notifRef, {
+   794→        type: "general",
+   795→        title: t("admin2.networkApprovedTitle"),
+   796→        message: `${t("admin2.networkCreatedAssigned")} "${sub.networkName}" ${t("admin2.andAssignedAsManager")}`,
+   797→        isRead: false,
+   798→        createdAt: Date.now(),
+   799→      });
+   800→
+   801→      toast.success(`${t("admin2.networkApprovedCreated")} "${sub.networkName}" ${t("admin2.andCreatedSuccess")}`);
+   802→    } catch {
+   803→      toast.error(t("admin2.errorApprovingSubmission"));
+   804→    }
+   805→  };
+   806→
+   807→  const rejectNetworkSubmission = async (subId: string, sub: NetworkSubmission, reason: string) => {
+   808→    try {
+   809→      await update(ref(db, `networkSubmissions/${subId}`), {
+   810→        status: "rejected",
+   811→        rejectionReason: reason || t("admin2.rejectedDefault"),
+   812→        reviewedAt: Date.now(),
+   813→        reviewedBy: auth.currentUser?.uid,
+   814→      });
+   815→
+   816→      // Send notification to the user
+   817→      const notifRef = push(ref(db, `notifications/${sub.userId}`));
+   818→      await set(notifRef, {
+   819→        type: "general",
+   820→        title: t("admin2.networkRequestRejected"),
+   821→        message: `${t("admin2.networkRequestRejected")} "${sub.networkName}"${reason ? ` - ${reason}` : ""}`,
+   822→        isRead: false,
+   823→        createdAt: Date.now(),
+   824→      });
+   825→
+   826→      toast.success(t("admin2.submissionRejected2"));
+   827→      setRejectingSubmissionId(null);
+   828→      setRejectionReason("");
+   829→    } catch {
+   830→      toast.error(t("admin2.errorRejectingSubmission"));
+   831→    }
+   832→  };
+   833→
+   834→  // Starlink CRUD
+   835→  const addStarlinkProduct = async () => {
+   836→    if (!newStarName || !newStarPrice) { toast.error(t("admin2.fillRequired")); return; }
+   837→    try {
+   838→      const prodRef = push(ref(db, "starlinkProducts"));
+   839→      await set(prodRef, {
+   840→        name: newStarName.trim(), description: newStarDesc.trim(), priceUSD: Number(newStarPrice),
+   841→        quantity: Number(newStarQty) || 0, imageBase64: newStarImage || "",
+   842→        specs: { downloadSpeed: newStarDownload || "", uploadSpeed: newStarUpload || "", latency: newStarLatency || "", coverage: newStarCoverage || "" },
+   843→        isActive: true, createdAt: Date.now(),
+   844→      });
+   845→      toast.success(t("admin2.addedProduct"));
+   846→      setNewStarName(""); setNewStarDesc(""); setNewStarPrice(""); setNewStarQty(""); setNewStarImage(""); setNewStarDownload(""); setNewStarUpload(""); setNewStarLatency(""); setNewStarCoverage("");
+   847→    } catch { toast.error(t("admin2.error")); }
+   848→  };
+   849→
+   850→  const deleteStarlinkProduct = async (id: string) => {
+   851→    if (deleteConfirm === `star-${id}`) {
+   852→      try { await remove(ref(db, `starlinkProducts/${id}`)); toast.success(t("admin2.deletedProduct")); setDeleteConfirm(null); }
+   853→      catch { toast.error(t("admin2.error")); }
+   854→    } else { setDeleteConfirm(`star-${id}`); setTimeout(() => setDeleteConfirm(null), 3000); }
+   855→  };
+   856→
+   857→  const updateStarlinkOrderStatus = async (orderId: string, status: string) => {
+   858→    try {
+   859→      await update(ref(db, `starlinkOrders/${orderId}`), { status });
+   860→      toast.success(t("admin2.orderUpdated"));
+   861→    } catch { toast.error(t("admin2.error")); }
+   862→  };
+   863→
+   864→  // Bank CRUD
+   865→  const addBank = async () => {
+   866→    if (!newBankName || !newBankAccount || !newBankNumber) { toast.error(t("admin2.fillAllFields")); return; }
+   867→    try {
+   868→      const bankRef = push(ref(db, "bankDetails"));
+   869→      await set(bankRef, { bankName: newBankName.trim(), accountName: newBankAccount.trim(), accountNumber: newBankNumber.trim(), isActive: true });
+   870→      toast.success(t("admin2.addedBank"));
+   871→      setNewBankName(""); setNewBankAccount(""); setNewBankNumber("");
+   872→    } catch { toast.error(t("admin2.error")); }
+   873→  };
+   874→
+   875→  const deleteBank = async (id: string) => {
+   876→    if (deleteConfirm === `bank-${id}`) {
+   877→      try { await remove(ref(db, `bankDetails/${id}`)); toast.success(t("admin2.deletedBank")); setDeleteConfirm(null); }
+   878→      catch { toast.error(t("admin2.error")); }
+   879→    } else { setDeleteConfirm(`bank-${id}`); setTimeout(() => setDeleteConfirm(null), 3000); }
+   880→  };
+   881→
+   882→  // ─── Telecom Provider CRUD ───────────────────────────────────
+   883→  const saveProvider = async () => {
+   884→    if (!providerForm.name || !providerForm.apiUrl) { toast.error(t("admin2.fillAllFields")); return; }
+   885→    try {
+   886→      let headers: Record<string, string> = {};
+   887→      let bodyTemplate: string = "{}";
+   888→      try { headers = JSON.parse(providerForm.headers || "{}"); } catch { toast.error("Headers JSON غير صالح"); return; }
+   889→      try { bodyTemplate = providerForm.bodyTemplate; JSON.parse(bodyTemplate); } catch { toast.error("Body Template JSON غير صالح"); return; }
+   890→      const data = {
+   891→        name: providerForm.name.trim(), nameEn: providerForm.nameEn.trim(),
+   892→        apiUrl: providerForm.apiUrl.trim(), apiKey: providerForm.apiKey.trim(),
+   893→        method: providerForm.method, headers, bodyTemplate,
+   894→        responseMapping: { successField: providerForm.successField.trim(), messageField: providerForm.messageField.trim(), transactionIdField: providerForm.transactionIdField.trim() },
+   895→        balanceCheckUrl: providerForm.balanceCheckUrl.trim(), isActive: providerForm.isActive,
+   896→        createdAt: Date.now(),
+   897→      };
+   898→      if (editingProviderId) {
+   899→        await update(ref(db, `telecomProviders/${editingProviderId}`), data);
+   900→        toast.success(t("admin2.updated"));
+   901→      } else {
+   902→        const provRef = push(ref(db, "telecomProviders"));
+   903→        await set(provRef, { ...data, id: provRef.key });
+   904→        toast.success(t("admin2.added"));
+   905→      }
+   906→      setEditingProviderId(null);
+   907→      setProviderForm({ name: "", nameEn: "", apiUrl: "", apiKey: "", method: "POST", headers: "{}", bodyTemplate: "{}", successField: "", messageField: "", transactionIdField: "", balanceCheckUrl: "", isActive: true });
+   908→    } catch { toast.error(t("admin2.error")); }
+   909→  };
+   910→
+   911→  const deleteProvider = async (id: string) => {
+   912→    if (deleteConfirm === `tprov-${id}`) {
+   913→      try { await remove(ref(db, `telecomProviders/${id}`)); toast.success(t("admin2.deleted")); setDeleteConfirm(null); }
+   914→      catch { toast.error(t("admin2.error")); }
+   915→    } else { setDeleteConfirm(`tprov-${id}`); setTimeout(() => setDeleteConfirm(null), 3000); }
+   916→  };
+   917→
+   918→  const toggleProviderActive = async (id: string, current: boolean) => {
+   919→    try { await update(ref(db, `telecomProviders/${id}`), { isActive: !current }); toast.success(t("admin2.updated")); }
+   920→    catch { toast.error(t("admin2.error")); }
+   921→  };
+   922→
+   923→  const startEditProvider = (p: TelecomProvider & { id: string }) => {
+   924→    setEditingProviderId(p.id);
+   925→    setProviderForm({
+   926→      name: p.name, nameEn: p.nameEn || "", apiUrl: p.apiUrl, apiKey: p.apiKey || "",
+   927→      method: p.method || "POST",
+   928→      headers: JSON.stringify(p.headers || {}, null, 2),
+   929→      bodyTemplate: typeof p.bodyTemplate === "string" ? p.bodyTemplate : JSON.stringify(p.bodyTemplate || {}, null, 2),
+   930→      successField: p.responseMapping?.successField || "", messageField: p.responseMapping?.messageField || "",
+   931→      transactionIdField: p.responseMapping?.transactionIdField || "",
+   932→      balanceCheckUrl: p.balanceCheckUrl || "", isActive: p.isActive,
+   933→    });
+   934→    setExpandedProvider(p.id);
+   935→  };
+   936→
+   937→  // ─── Telecom Network CRUD ────────────────────────────────────
+   938→  const saveNetwork = async () => {
+   939→    if (!networkForm.name) { toast.error(t("admin2.fillAllFields")); return; }
+   940→    try {
+   941→      const prefixes = networkForm.prefixes.split(",").map(p => p.trim()).filter(Boolean);
+   942→      let subCategories: { id: string; name: string; nameEn: string; regionCode: string; isActive: boolean }[] = [];
+   943→      try {
+   944→        if (networkForm.subCategories) subCategories = JSON.parse(networkForm.subCategories);
+   945→      } catch { /* ignore */ }
+   946→      const data = {
+   947→        name: networkForm.name.trim(), nameEn: networkForm.nameEn.trim(),
+   948→        color: networkForm.color, bgColor: networkForm.bgColor, icon: networkForm.icon,
+   949→        prefixes, isActive: networkForm.isActive, providerId: networkForm.providerId || null,
+   950→        subCategories, createdAt: Date.now(),
+   951→      };
+   952→      if (editingNetworkId) {
+   953→        await update(ref(db, `telecomNetworks/${editingNetworkId}`), data);
+   954→        toast.success(t("admin2.updated"));
+   955→      } else {
+   956→        const netRef = push(ref(db, "telecomNetworks"));
+   957→        await set(netRef, { ...data, id: netRef.key });
+   958→        toast.success(t("admin2.added"));
+   959→      }
+   960→      setEditingNetworkId(null);
+   961→      setNetworkForm({ name: "", nameEn: "", color: "#1B7A3D", bgColor: "#E8F5E9", icon: "📱", prefixes: "", isActive: true, providerId: "", subCategories: "" });
+   962→    } catch { toast.error(t("admin2.error")); }
+   963→  };
+   964→
+   965→  const deleteTelecomNetwork = async (id: string) => {
+   966→    if (deleteConfirm === `tnet-${id}`) {
+   967→      try { await remove(ref(db, `telecomNetworks/${id}`)); toast.success(t("admin2.deleted")); setDeleteConfirm(null); }
+   968→      catch { toast.error(t("admin2.error")); }
+   969→    } else { setDeleteConfirm(`tnet-${id}`); setTimeout(() => setDeleteConfirm(null), 3000); }
+   970→  };
+   971→
+   972→  const toggleTelecomNetworkActive = async (id: string, current: boolean) => {
+   973→    try { await update(ref(db, `telecomNetworks/${id}`), { isActive: !current }); toast.success(t("admin2.updated")); }
+   974→    catch { toast.error(t("admin2.error")); }
+   975→  };
+   976→
+   977→  const startEditNetwork = (n: TelecomNetwork & { id: string }) => {
+   978→    setEditingNetworkId(n.id);
+   979→    setNetworkForm({
+   980→      name: n.name, nameEn: n.nameEn || "", color: n.color || "#1B7A3D",
+   981→      bgColor: n.bgColor || "#E8F5E9", icon: n.icon || "📱",
+   982→      prefixes: (n.prefixes || []).join(", "), isActive: n.isActive,
+   983→      providerId: n.providerId || "",
+   984→      subCategories: JSON.stringify(n.subCategories || [], null, 2),
+   985→    });
+   986→    setExpandedNetwork(n.id);
+   987→  };
+   988→
+   989→  // ─── Telecom Package CRUD ────────────────────────────────────
+   990→  const savePkg = async () => {
+   991→    if (!pkgForm.name || !pkgForm.price || !pkgForm.networkId) { toast.error(t("admin2.fillAllFields")); return; }
+   992→    try {
+   993→      const data = {
+   994→        name: pkgForm.name.trim(), nameEn: pkgForm.nameEn.trim(),
+   995→        price: Number(pkgForm.price), wholesalePrice: Number(pkgForm.wholesalePrice) || undefined,
+   996→        description: pkgForm.description.trim(), descriptionEn: pkgForm.descriptionEn.trim(),
+   997→        dataAmount: pkgForm.dataAmount.trim() || undefined,
+   998→        duration: Number(pkgForm.duration) || undefined,
+   999→        durationUnit: pkgForm.durationUnit || "day",
+  1000→        type: pkgForm.type, isActive: pkgForm.isActive,
+  1001→        subCategoryId: pkgForm.subCategoryId.trim() || undefined,
+  1002→        networkId: pkgForm.networkId, productCode: pkgForm.productCode.trim() || undefined,
+  1003→        createdAt: Date.now(),
+  1004→      };
+  1005→      if (editingPkgId) {
+  1006→        await update(ref(db, `telecomPackages/${pkgForm.networkId}/${editingPkgId}`), data);
+  1007→        toast.success(t("admin2.updated"));
+  1008→      } else {
+  1009→        const pkgRef = push(ref(db, `telecomPackages/${pkgForm.networkId}`));
+  1010→        await set(pkgRef, { ...data, id: pkgRef.key });
+  1011→        toast.success(t("admin2.added"));
+  1012→      }
+  1013→      setEditingPkgId(null);
+  1014→      setPkgForm({ name: "", nameEn: "", price: "", wholesalePrice: "", description: "", descriptionEn: "", dataAmount: "", duration: "", durationUnit: "day", type: "recharge", isActive: true, subCategoryId: "", productCode: "", networkId: "" });
+  1015→    } catch { toast.error(t("admin2.error")); }
+  1016→  };
+  1017→
+  1018→  const deletePkg = async (networkId: string, id: string) => {
+  1019→    if (deleteConfirm === `tpkg-${id}`) {
+  1020→      try { await remove(ref(db, `telecomPackages/${networkId}/${id}`)); toast.success(t("admin2.deleted")); setDeleteConfirm(null); }
+  1021→      catch { toast.error(t("admin2.error")); }
+  1022→    } else { setDeleteConfirm(`tpkg-${id}`); setTimeout(() => setDeleteConfirm(null), 3000); }
+  1023→  };
+  1024→
+  1025→  const togglePkgActive = async (networkId: string, id: string, current: boolean) => {
+  1026→    try { await update(ref(db, `telecomPackages/${networkId}/${id}`), { isActive: !current }); toast.success(t("admin2.updated")); }
+  1027→    catch { toast.error(t("admin2.error")); }
+  1028→  };
+  1029→
+  1030→  const startEditPkg = (p: TelecomPackage & { id: string; networkId: string }) => {
+  1031→    setEditingPkgId(p.id);
+  1032→    setPkgForm({
+  1033→      name: p.name, nameEn: p.nameEn || "", price: String(p.price),
+  1034→      wholesalePrice: p.wholesalePrice ? String(p.wholesalePrice) : "",
+  1035→      description: p.description || "", descriptionEn: p.descriptionEn || "",
+  1036→      dataAmount: p.dataAmount || "", duration: p.duration ? String(p.duration) : "",
+  1037→      durationUnit: p.durationUnit || "day", type: p.type || "recharge",
+  1038→      isActive: p.isActive, subCategoryId: p.subCategoryId || "",
+  1039→      productCode: p.productCode || "", networkId: p.networkId,
+  1040→    });
+  1041→  };
+  1042→
+  1043→  // SIM CRUD
+  1044→  const addSim = async () => {
+  1045→    if (!newSimName || !newSimPrice) { toast.error(t("admin2.fillRequired")); return; }
+  1046→    try {
+  1047→      const simRef = push(ref(db, "simCards"));
+  1048→      await set(simRef, { name: newSimName.trim(), price: Number(newSimPrice), description: newSimDesc.trim(), imageUrl: newSimImage || "", isAvailable: true });
+  1049→      toast.success(t("admin2.addedSim"));
+  1050→      setNewSimName(""); setNewSimPrice(""); setNewSimDesc(""); setNewSimImage("");
+  1051→    } catch { toast.error(t("admin2.error")); }
+  1052→  };
+  1053→
+  1054→  const deleteSim = async (id: string) => {
+  1055→    if (deleteConfirm === `sim-${id}`) {
+  1056→      try { await remove(ref(db, `simCards/${id}`)); toast.success(t("admin2.deletedSim")); setDeleteConfirm(null); }
+  1057→      catch { toast.error(t("admin2.error")); }
+  1058→    } else { setDeleteConfirm(`sim-${id}`); setTimeout(() => setDeleteConfirm(null), 3000); }
+  1059→  };
+  1060→
+  1061→  // Ad CRUD
+  1062→  const addAd = async () => {
+  1063→    if (!newAdTitle || !newAdImage) { toast.error(t("admin2.enterTitleAndImage")); return; }
+  1064→    try {
+  1065→      const adRef = push(ref(db, "advertisements"));
+  1066→      await set(adRef, { title: newAdTitle.trim(), description: newAdDesc.trim(), imageUrl: newAdImage, isActive: true });
+  1067→      toast.success(t("admin2.addedAd"));
+  1068→      setNewAdTitle(""); setNewAdDesc(""); setNewAdImage("");
+  1069→    } catch { toast.error(t("admin2.error")); }
+  1070→  };
+  1071→
+  1072→  const deleteAd = async (id: string) => {
+  1073→    if (deleteConfirm === `ad-${id}`) {
+  1074→      try { await remove(ref(db, `advertisements/${id}`)); toast.success(t("admin2.deletedAd")); setDeleteConfirm(null); }
+  1075→      catch { toast.error(t("admin2.error")); }
+  1076→    } else { setDeleteConfirm(`ad-${id}`); setTimeout(() => setDeleteConfirm(null), 3000); }
+  1077→  };
+  1078→
+  1079→  const toggleAd = async (id: string, isActive: boolean) => {
+  1080→    try { await update(ref(db, `advertisements/${id}`), { isActive: !isActive }); toast.success(t("admin2.updated")); }
+  1081→    catch { toast.error(t("admin2.error")); }
+  1082→  };
+  1083→
+  1084→  // Home Banner CRUD
+  1085→  const addHomeBanner = async () => {
+  1086→    if (!newBannerTitle || !newBannerImage) { toast.error(t("admin2.enterTitleAndImage")); return; }
+  1087→    try {
+  1088→      const bannerRef = push(ref(db, "homeBanners"));
+  1089→      await set(bannerRef, {
+  1090→        title: newBannerTitle.trim(),
+  1091→        description: newBannerDesc.trim(),
+  1092→        imageUrl: newBannerImage,
+  1093→        linkUrl: newBannerLink.trim() || null,
+  1094→        isActive: true,
+  1095→        order: Number(newBannerOrder) || 0,
+  1096→        createdAt: Date.now(),
+  1097→      });
+  1098→      toast.success(t("admin2.addedBanner"));
+  1099→      setNewBannerTitle(""); setNewBannerDesc(""); setNewBannerImage(""); setNewBannerLink(""); setNewBannerOrder("0");
+  1100→    } catch { toast.error(t("admin2.error")); }
+  1101→  };
+  1102→
+  1103→  const deleteHomeBanner = async (id: string) => {
+  1104→    if (deleteConfirm === `hb-${id}`) {
+  1105→      try { await remove(ref(db, `homeBanners/${id}`)); toast.success(t("admin2.deletedBanner")); setDeleteConfirm(null); }
+  1106→      catch { toast.error(t("admin2.error")); }
+  1107→    } else {
+  1108→      setDeleteConfirm(`hb-${id}`);
+  1109→      setTimeout(() => setDeleteConfirm(null), 3000);
+  1110→    }
+  1111→  };
+  1112→
+  1113→  const toggleHomeBanner = async (id: string, isActive: boolean) => {
+  1114→    try { await update(ref(db, `homeBanners/${id}`), { isActive: !isActive }); toast.success(t("admin2.updated")); }
+  1115→    catch { toast.error(t("admin2.error")); }
+  1116→  };
+  1117→
+  1118→  // Redeem codes
+  1119→  const generateRedeemCodes = async () => {
+  1120→    const amount = Number(redeemCodeAmount);
+  1121→    const count = Number(redeemCodeCount) || 1;
+  1122→    if (!amount || amount < 1) { toast.error(t("admin2.enterValidAmount")); return; }
+  1123→    if (count < 1 || count > 100) { toast.error(t("admin2.codesCount1to100")); return; }
+  1124→    setIsGenerating(true);
+  1125→    try {
+  1126→      const generated: { code: string; amount: number }[] = [];
+  1127→      for (let i = 0; i < count; i++) {
+  1128→        const code = generateCode();
+  1129→        generated.push({ code, amount });
+  1130→        const codeRef = push(ref(db, "redeemCodes"));
+  1131→        await set(codeRef, { code, amount, isUsed: false, usedBy: null, usedByName: null, usedAt: null, createdAt: Date.now(), createdBy: auth.currentUser?.uid || null });
+  1132→        await set(ref(db, `redeemCodeLookup/${code}`), { pushId: codeRef.key, amount, isUsed: false, createdAt: Date.now() });
+  1133→      }
+  1134→      setLastGeneratedCodes(generated);
+  1135→      toast.success(`${t("admin2.generatedCodes")} ${count} ${t("admin2.codes")}`);
+  1136→      setRedeemCodeAmount(""); setRedeemCodeCount("1");
+  1137→    } catch { toast.error(t("admin2.error")); }
+  1138→    setIsGenerating(false);
+  1139→  };
+  1140→
+  1141→  const generateGiftCardPDF = async (codes: { code: string; amount: number }[], title?: string) => {
+  1142→    const doc = new jsPDF({
+  1143→      orientation: 'portrait',
+  1144→      unit: 'mm',
+  1145→      format: 'a4',
+  1146→    });
+  1147→
+  1148→    const pageWidth = 210;
+  1149→    const margin = 10;
+  1150→    const cardWidth = 58;
+  1151→    const cardHeight = 36;
+  1152→    const cols = 3;
+  1153→    const gapX = (pageWidth - 2 * margin - cols * cardWidth) / (cols - 1);
+  1154→    const gapY = 6;
+  1155→    const startY = 20;
+  1156→
+  1157→    // Load logo
+  1158→    let logoData: string | null = null;
+  1159→    try {
+  1160→      const img = new Image();
+  1161→      img.crossOrigin = "anonymous";
+  1162→      logoData = await new Promise<string>((resolve) => {
+  1163→        img.onload = () => {
+  1164→          const canvas = document.createElement("canvas");
+  1165→          canvas.width = 60;
+  1166→          canvas.height = 60;
+  1167→          const ctx = canvas.getContext("2d");
+  1168→          if (ctx) {
+  1169→            ctx.drawImage(img, 0, 0, 60, 60);
+  1170→            resolve(canvas.toDataURL("image/jpeg"));
+  1171→          } else resolve("");
+  1172→        };
+  1173→        img.onerror = () => resolve("");
+  1174→        img.src = "/images/IMG_20260527_220851.jpg";
+  1175→      });
+  1176→    } catch { logoData = null; }
+  1177→
+  1178→    let cardIndex = 0;
+  1179→    let pageNum = 0;
+  1180→
+  1181→    for (let i = 0; i < codes.length; i++) {
+  1182→      if (cardIndex % (cols * 7) === 0) {
+  1183→        if (pageNum > 0) doc.addPage();
+  1184→        pageNum++;
+  1185→
+  1186→        // Page header
+  1187→        doc.setFontSize(14);
+  1188→        doc.setFont("helvetica", "bold");
+  1189→        doc.text(title || "AppleNet Gift Cards", pageWidth / 2, 12, { align: "center" });
+  1190→        doc.setFontSize(8);
+  1191→        doc.setFont("helvetica", "normal");
+  1192→        doc.text(`Page ${pageNum}`, pageWidth / 2, 17, { align: "center" });
+  1193→      }
+  1194→
+  1195→      const code = codes[i];
+  1196→      const row = Math.floor((cardIndex % (cols * 7)) / cols);
+  1197→      const col = (cardIndex % (cols * 7)) % cols;
+  1198→      const x = margin + col * (cardWidth + gapX);
+  1199→      const y = startY + row * (cardHeight + gapY);
+  1200→
+  1201→      // Card border
+  1202→      doc.setDrawColor(200, 200, 200);
+  1203→      doc.setLineWidth(0.3);
+  1204→      doc.roundedRect(x, y, cardWidth, cardHeight, 2, 2, "S");
+  1205→
+  1206→      // Green top bar
+  1207→      doc.setFillColor(27, 122, 61);
+  1208→      doc.rect(x, y, cardWidth, 4, "F");
+  1209→
+  1210→      // Logo
+  1211→      if (logoData) {
+  1212→        doc.addImage(logoData, "JPEG", x + 2, y + 5, 7, 7);
+  1213→      }
+  1214→
+  1215→      // AppleNet text
+  1216→      doc.setFontSize(9);
+  1217→      doc.setFont("helvetica", "bold");
+  1218→      doc.setTextColor(27, 122, 61);
+  1219→      doc.text("AppleNet", x + (logoData ? 11 : 2), y + 9);
+  1220→
+  1221→      // Price
+  1222→      doc.setFontSize(8);
+  1223→      doc.setTextColor(100, 100, 100);
+  1224→      doc.text(`${code.amount} YER`, x + cardWidth - 3, y + 9, { align: "right" });
+  1225→
+  1226→      // PIN field
+  1227→      doc.setFillColor(245, 245, 245);
+  1228→      doc.roundedRect(x + 3, y + 15, cardWidth - 6, 7, 1, 1, "F");
+  1229→      doc.setFontSize(6);
+  1230→      doc.setTextColor(150, 150, 150);
+  1231→      doc.text("PIN:", x + 5, y + 18.5);
+  1232→      doc.setFontSize(8);
+  1233→      doc.setFont("helvetica", "bold");
+  1234→      doc.setTextColor(27, 122, 61);
+  1235→      doc.text(code.code, x + 14, y + 19.5);
+  1236→
+  1237→      // Contact
+  1238→      doc.setFontSize(5);
+  1239→      doc.setFont("helvetica", "normal");
+  1240→      doc.setTextColor(150, 150, 150);
+  1241→      doc.text("Tel: 774146432", x + cardWidth / 2, y + 27, { align: "center" });
+  1242→
+  1243→      // Bottom line
+  1244→      doc.setDrawColor(27, 122, 61);
+  1245→      doc.setLineWidth(0.5);
+  1246→      doc.line(x + 3, y + cardHeight - 5, x + cardWidth - 3, y + cardHeight - 5);
+  1247→
+  1248→      doc.setTextColor(0, 0, 0);
+  1249→      cardIndex++;
+  1250→    }
+  1251→
+  1252→    doc.save(`AppleNet-Gift-Cards-${Date.now()}.pdf`);
+  1253→    toast.success(t("admin2.pdfGenerated"));
+  1254→  };
+  1255→
+  1256→  const deleteRedeemCode = async (id: string, code?: string) => {
+  1257→    if (deleteConfirm === `rc-${id}`) {
+  1258→      try {
+  1259→        await remove(ref(db, `redeemCodes/${id}`));
+  1260→        if (code) await remove(ref(db, `redeemCodeLookup/${code}`));
+  1261→        toast.success(t("admin2.deletedCode")); setDeleteConfirm(null);
+  1262→      } catch { toast.error(t("admin2.error")); }
+  1263→    } else { setDeleteConfirm(`rc-${id}`); setTimeout(() => setDeleteConfirm(null), 3000); }
+  1264→  };
+  1265→
+  1266→  // Shared codes
+  1267→  const addSharedCode = async () => {
+  1268→    const amount = Number(sharedCodeAmount);
+  1269→    const maxUses = Number(sharedCodeMaxUses) || 1;
+  1270→    if (!amount || amount < 1) { toast.error(t("admin2.enterValidAmount")); return; }
+  1271→    if (maxUses < 1) { toast.error(t("admin2.enterMaxUses")); return; }
+  1272→    try {
+  1273→      const code = generateCode();
+  1274→      const codeRef = push(ref(db, "sharedRedeemCodes"));
+  1275→      await set(codeRef, { code, amount, maxRedemptions: maxUses, currentRedemptions: 0, description: sharedCodeDesc.trim(), isActive: true, createdAt: Date.now(), createdBy: auth.currentUser?.uid || null, redeemedBy: {} });
+  1276→      toast.success(`${t("admin2.createdGiftCode")}: ${code}`);
+  1277→      setSharedCodeAmount(""); setSharedCodeMaxUses(""); setSharedCodeDesc("");
+  1278→    } catch { toast.error(t("admin2.error")); }
+  1279→  };
+  1280→
+  1281→  const toggleSharedCode = async (id: string, isActive: boolean) => {
+  1282→    try { await update(ref(db, `sharedRedeemCodes/${id}`), { isActive: !isActive }); toast.success(t("admin2.updated")); }
+  1283→    catch { toast.error(t("admin2.error")); }
+  1284→  };
+  1285→
+  1286→  // Subscription plans
+  1287→  const addPlan = async () => {
+  1288→    if (!newPlanName || !newPlanPrice || !newPlanDuration) { toast.error(t("admin2.fillAllFields")); return; }
+  1289→    try {
+  1290→      const planRef = push(ref(db, "subscriptionPlans"));
+  1291→      await set(planRef, { name: newPlanName.trim(), price: Number(newPlanPrice), description: newPlanDesc.trim(), durationDays: Number(newPlanDuration), isActive: true, createdAt: Date.now() });
+  1292→      toast.success(t("admin2.addedPlan"));
+  1293→      setNewPlanName(""); setNewPlanPrice(""); setNewPlanDesc(""); setNewPlanDuration("");
+  1294→    } catch { toast.error(t("admin2.error")); }
+  1295→  };
+  1296→
+  1297→  const togglePlan = async (id: string, isActive: boolean) => {
+  1298→    try { await update(ref(db, `subscriptionPlans/${id}`), { isActive: !isActive }); toast.success(t("admin2.updated")); }
+  1299→    catch { toast.error(t("admin2.error")); }
+  1300→  };
+  1301→
+  1302→  // Bulk notifications
+  1303→  const sendBulkNotification = async () => {
+  1304→    if (!bulkTitle || !bulkMessage) { toast.error(t("admin2.enterTitleMessage")); return; }
+  1305→    setIsSendingBulk(true);
+  1306→    try {
+  1307→      const targetUsers = usersList.filter(u => u.isActive !== false);
+  1308→      let sentCount = 0;
+  1309→      for (const u of targetUsers) {
+  1310→        const notifRef = push(ref(db, `notifications/${u.id}`));
+  1311→        await set(notifRef, { type: "general", title: bulkTitle.trim(), message: bulkMessage.trim(), isRead: false, createdAt: Date.now() });
+  1312→        sentCount++;
+  1313→      }
+  1314→      const bulkRef = push(ref(db, "bulkNotifications"));
+  1315→      await set(bulkRef, { title: bulkTitle.trim(), message: bulkMessage.trim(), type: "general", targetCount: sentCount, sentAt: Date.now(), sentBy: auth.currentUser?.uid || null });
+  1316→      toast.success(`${t("admin2.sentNotificationToUsers")} ${sentCount} ${t("admin2.user2")}`);
+  1317→      setBulkTitle(""); setBulkMessage("");
+  1318→    } catch { toast.error(t("admin2.error")); }
+  1319→    setIsSendingBulk(false);
+  1320→  };
+  1321→
+  1322→  // Mark commission as paid
+  1323→  const markCommissionPaid = async (entryId: string) => {
+  1324→    try {
+  1325→      await update(ref(db, `commissionEntries/${entryId}`), { isPaid: true, paidAt: Date.now() });
+  1326→      toast.success(t("admin2.markedAsPaid"));
+  1327→    } catch { toast.error(t("admin2.error")); }
+  1328→  };
+  1329→
+  1330→  // Save app content
+  1331→  const saveAppContent = async (key: string, value: string) => {
+  1332→    try {
+  1333→      await update(ref(db, "appContent"), { [key]: value });
+  1334→      toast.success(t("admin2.saved"));
+  1335→    } catch { toast.error(t("admin2.error")); }
+  1336→  };
+  1337→
+  1338→  // Save settings
+  1339→  const saveSettings = async (updates: Record<string, unknown>) => {
+  1340→    try {
+  1341→      await update(ref(db, "settings"), updates);
+  1342→      toast.success(t("admin2.settingsSaved"));
+  1343→    } catch { toast.error(t("admin2.error")); }
+  1344→  };
+  1345→
+  1346→  // Image upload handler
+  1347→  const handleImageUpload = (setter: (v: string) => void, maxSize = 128) => async (e: React.ChangeEvent<HTMLInputElement>) => {
+  1348→    const file = e.target.files?.[0];
+  1349→    if (!file) return;
+  1350→    try {
+  1351→      const base64 = await compressImageToBase64(file, maxSize, 0.6);
+  1352→      setter(base64);
+  1353→    } catch { toast.error(t("admin2.imageUploadFailed")); }
+  1354→  };
+  1355→
+  1356→  // Copy to clipboard
+  1357→  const copyCode = async (code: string) => {
+  1358→    try { await navigator.clipboard.writeText(code); toast.success(t("admin2.copied")); }
+  1359→    catch { toast.error(t("admin2.copyFailed")); }
+  1360→  };
+  1361→
+  1362→  // ─── Balance management actions ─────────────────────────────
+  1363→  const handleSendBalance = async () => {
+  1364→    const amount = Number(balanceAmount);
+  1365→    if (!balanceUserId) { toast.error(t("admin2.selectUser")); return; }
+  1366→    if (!amount || amount <= 0) { toast.error(t("admin2.enterValidAmount")); return; }
+  1367→    if (!balanceDescription.trim()) { toast.error(t("admin2.enterOperationDesc")); return; }
+  1368→    setIsProcessingBalance(true);
+  1369→    try {
+  1370→      const amountRef = ref(db, `credit/${balanceUserId}/amount`);
+  1371→      const result = await runTransaction(amountRef, (cur) => {
+  1372→        const bal = (cur || 0) as number;
+  1373→        let newBal = bal + amount;
+  1374→        if (maxBalance > 0 && newBal > maxBalance) {
+  1375→          newBal = maxBalance;
+  1376→        }
+  1377→        return newBal;
+  1378→      });
+  1379→      if (!result.committed) { toast.error(t("admin2.operationFailed")); setIsProcessingBalance(false); return; }
+  1380→      await update(ref(db, `credit/${balanceUserId}`), { updatedAt: Date.now() });
+  1381→      const histRef = push(ref(db, `credit/${balanceUserId}/history`));
+  1382→      await set(histRef, { type: "admin_credit", amount, description: balanceDescription.trim(), date: Date.now() });
+  1383→      // Send notification
+  1384→      const notifRef = push(ref(db, `notifications/${balanceUserId}`));
+  1385→      await set(notifRef, { type: "general", title: t("admin2.balanceAdded"), message: `${t("admin2.addedToYourAccount")} ${fmt(amount)} ${t("admin2.yer")} ${t("admin2.toYourAccount")} - ${balanceDescription.trim()}`, isRead: false, createdAt: Date.now() });
+  1386→      toast.success(`${t("admin2.addedToYourAccount")} ${fmt(amount)} ${t("admin2.yer")}`);
+  1387→      setBalanceAmount(""); setBalanceDescription(""); setBalanceUserId("");
+  1388→    } catch { toast.error(t("admin2.errorAddingBalance")); }
+  1389→    setIsProcessingBalance(false);
+  1390→  };
+  1391→
+  1392→  const handleWithdrawBalance = async () => {
+  1393→    const amount = Number(balanceAmount);
+  1394→    if (!balanceUserId) { toast.error(t("admin2.selectUser")); return; }
+  1395→    if (!amount || amount <= 0) { toast.error(t("admin2.enterValidAmount")); return; }
+  1396→    if (!balanceDescription.trim()) { toast.error(t("admin2.enterWithdrawReason")); return; }
+  1397→    const currentBalance = userBalances[balanceUserId] || 0;
+  1398→    if (amount > currentBalance) { toast.error(`${t("admin2.userBalanceInsufficient")} (${fmt(currentBalance)} ${t("admin2.yer")})`); return; }
+  1399→    setIsProcessingBalance(true);
+  1400→    try {
+  1401→      const amountRef = ref(db, `credit/${balanceUserId}/amount`);
+  1402→      const result = await runTransaction(amountRef, (cur) => {
+  1403→        const bal = (cur || 0) as number;
+  1404→        if (bal < amount) return bal; // abort if insufficient
+  1405→        return bal - amount;
+  1406→      });
+  1407→      if (!result.committed) { toast.error(t("admin2.userBalanceInsufficient")); setIsProcessingBalance(false); return; }
+  1408→      await update(ref(db, `credit/${balanceUserId}`), { updatedAt: Date.now() });
+  1409→      const histRef = push(ref(db, `credit/${balanceUserId}/history`));
+  1410→      await set(histRef, { type: "admin_debit", amount: -amount, description: balanceDescription.trim(), date: Date.now() });
+  1411→      // Send notification
+  1412→      const notifRef = push(ref(db, `notifications/${balanceUserId}`));
+  1413→      await set(notifRef, { type: "general", title: t("admin2.balanceWithdrawn"), message: `${t("admin2.withdrawnFromYourAccount")} ${fmt(amount)} ${t("admin2.yer")} ${t("admin2.fromYourAccount")} - ${balanceDescription.trim()}`, isRead: false, createdAt: Date.now() });
+  1414→      toast.success(`${t("admin2.withdrawnFromYourAccount")} ${fmt(amount)} ${t("admin2.yer")}`);
+  1415→      setBalanceAmount(""); setBalanceDescription(""); setBalanceUserId("");
+  1416→    } catch { toast.error(t("admin2.errorWithdrawingBalance")); }
+  1417→    setIsProcessingBalance(false);
+  1418→  };
+  1419→
+  1420→  // ─── Sale Location actions ─────────────────────────────────
+  1421→  const addSaleLocation = async () => {
+  1422→    if (!newLocName || !newLocNetworkId || !newLocProvinceId) {
+  1423→      toast.error(t("admin2.fillLocationFields")); return;
+  1424→    }
+  1425→    try {
+  1426→      const provinceObj = PROVINCES.find(p => p.id === newLocProvinceId);
+  1427→      const netInfo = networksList.find(n => n.id === newLocNetworkId);
+  1428→      const locRef = push(ref(db, "cardSaleLocations"));
+  1429→      await set(locRef, {
+  1430→        networkId: newLocNetworkId,
+  1431→        networkName: netInfo?.name || "",
+  1432→        name: newLocName.trim(),
+  1433→        provinceId: newLocProvinceId,
+  1434→        provinceName: provinceObj?.name || "",
+  1435→        district: newLocDistrict || "",
+  1436→        exactLocation: newLocExactLocation.trim(),
+  1437→        phone: newLocPhone.trim() || null,
+  1438→        isActive: true,
+  1439→        createdAt: Date.now(),
+  1440→      });
+  1441→      toast.success(t("admin2.addedSaleLocation"));
+  1442→      setNewLocName(""); setNewLocNetworkId(""); setNewLocProvinceId(""); setNewLocDistrict(""); setNewLocExactLocation(""); setNewLocPhone("");
+  1443→    } catch { toast.error(t("admin2.error")); }
+  1444→  };
+  1445→
+  1446→  const deleteSaleLocation = async (id: string) => {
+  1447→    if (deleteConfirm === `sl-${id}`) {
+  1448→      try { await remove(ref(db, `cardSaleLocations/${id}`)); toast.success(t("admin2.deletedSaleLocation")); setDeleteConfirm(null); }
+  1449→      catch { toast.error(t("admin2.error")); }
+  1450→    } else {
+  1451→      setDeleteConfirm(`sl-${id}`);
+  1452→      setTimeout(() => setDeleteConfirm(null), 3000);
+  1453→    }
+  1454→  };
+  1455→
+  1456→  const toggleSaleLocation = async (id: string, currentActive: boolean) => {
+  1457→    try {
+  1458→      await update(ref(db, `cardSaleLocations/${id}`), { isActive: !currentActive });
+  1459→      toast.success(!currentActive ? t("admin2.activatedSaleLocation") : t("admin2.deactivatedSaleLocation"));
+  1460→    } catch { toast.error(t("admin2.error")); }
+  1461→  };
+  1462→
+  1463→  // ─── RENDER ────────────────────────────────────────────────
+  1464→  return (
+  1465→    <motion.div
+  1466→      initial={{ opacity: 0, y: "100%" }}
+  1467→      animate={{ opacity: 1, y: 0 }}
+  1468→      exit={{ opacity: 0, y: "100%" }}
+  1469→      transition={iOSSpring.gentle}
+  1470→      className="fixed inset-0 z-50 bg-white overflow-hidden flex flex-col"
+  1471→      dir={isRTL ? "rtl" : "ltr"}
+  1472→    >
+  1473→      {/* ─── Top Bar ─── */}
+  1474→      <div className="flex-shrink-0 bg-white border-b border-gray-100 shadow-sm">
+  1475→        <div className="px-4 py-3 flex items-center justify-between">
+  1476→          <div className="flex items-center gap-2">
+  1477→            <div className="w-8 h-8 rounded-lg bg-[#1B7A3D] flex items-center justify-center">
+  1478→              <ShieldCheck className="w-4 h-4 text-white" />
+  1479→            </div>
+  1480→            <div>
+  1481→              <h1 className="text-sm font-black text-gray-900">{t("admin2.controlPanel")}</h1>
+  1482→              <p className="text-[9px] text-[#1B7A3D] font-bold">{t("admin2.admin")}</p>
+  1483→            </div>
+  1484→          </div>
+  1485→          <Button variant="ghost" size="sm" onClick={onClose} className="text-gray-400 hover:text-gray-600 rounded-xl">
+  1486→            <X className="w-5 h-5" />
+  1487→          </Button>
+  1488→        </div>
+  1489→
+  1490→        {/* ─── Tab Bar ─── */}
+  1491→        <div className="px-4 pb-2 flex gap-2 overflow-x-auto no-scrollbar">
+  1492→          {ADMIN_TABS.map(tab => {
+  1493→            const badgeCount = (() => {
+  1494→              if (tab.id === "overview") return pendingDeposits.length + pendingNetworkSubmissions.length;
+  1495→              if (tab.id === "networkRequests") return pendingNetworkSubmissions.length;
+  1496→              if (tab.id === "orders") return pendingDeposits.length;
+  1497→              return 0;
+  1498→            })();
+  1499→            return (
+  1500→              <motion.button
+  1501→                key={tab.id}
+  1502→                whileTap={{ scale: 0.95 }}
+  1503→                onClick={() => setActiveTab(tab.id)}
+  1504→                className={`relative flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
+  1505→                  activeTab === tab.id
+  1506→                    ? "bg-gradient-to-l from-[#1B7A3D] to-[#22A24D] text-white shadow-md"
+  1507→                    : "bg-gray-50 text-gray-500 hover:bg-gray-100"
+  1508→                }`}
+  1509→              >
+  1510→                <tab.icon className="w-3 h-3" />{tab.label}
+  1511→                {badgeCount > 0 && (
+  1512→                  <motion.span
+  1513→                    animate={{ scale: [1, 1.2, 1] }}
+  1514→                    transition={{ duration: 1.5, repeat: Infinity, repeatType: "loop" }}
+  1515→                    className="absolute -top-1.5 -left-1.5 min-w-[16px] h-4 bg-red-500 text-white text-[9px] font-black rounded-full flex items-center justify-center px-1 shadow-sm"
+  1516→                  >
+  1517→                    {badgeCount > 99 ? "99+" : badgeCount}
+  1518→                  </motion.span>
+  1519→                )}
+  1520→              </motion.button>
+  1521→            );
+  1522→          })}
+  1523→        </div>
+  1524→      </div>
+  1525→
+  1526→      {/* ─── Content Area ─── */}
+  1527→      <div className="flex-1 overflow-y-auto">
+  1528→        <div className="max-w-3xl mx-auto px-4 py-4 pb-8">
+  1529→          <AnimatePresence mode="wait">
+  1530→
+  1531→            {/* ═══ TAB 1: الإحصائيات (Enhanced) ═══ */}
+  1532→            {activeTab === "overview" && (
+  1533→              <motion.div key="overview" variants={sectionVariants} initial="initial" animate="animate" exit="exit" transition={iOSSpring.gentle} className="space-y-4">
+  1534→                {/* ─── KPI Cards Row 1 ─── */}
+  1535→                <div className="grid grid-cols-2 gap-3">
+  1536→                  <div className="bg-gradient-to-br from-[#1B7A3D] to-[#22A24D] rounded-2xl p-4 text-white shadow-lg shadow-[#1B7A3D]/20">
+  1537→                    <Users className="w-5 h-5 opacity-60 mb-1" />
+  1538→                    <p className="text-2xl font-black">{fmt(usersList.length)}</p>
+  1539→                    <p className="text-[9px] opacity-70">إجمالي المستخدمين</p>
+  1540→                    <p className="text-[8px] opacity-50 mt-0.5">نشط: {fmt(usersList.filter(u => u.isActive !== false).length)} • معطل: {fmt(usersList.filter(u => u.isActive === false).length)}</p>
+  1541→                  </div>
+  1542→                  <div className="bg-gradient-to-br from-orange-500 to-orange-600 rounded-2xl p-4 text-white shadow-lg shadow-orange-500/20">
+  1543→                    <CreditCard className="w-5 h-5 opacity-60 mb-1" />
+  1544→                    <p className="text-2xl font-black">{fmt(cardsList.length)}</p>
+  1545→                    <p className="text-[9px] opacity-70">إجمالي الكروت</p>
+  1546→                    <p className="text-[8px] opacity-50 mt-0.5">مباعة: {fmt(soldCards.length)} • متاحة: {fmt(cardsList.length - soldCards.length)}</p>
+  1547→                  </div>
+  1548→                  <div className="bg-gradient-to-br from-purple-500 to-purple-600 rounded-2xl p-4 text-white shadow-lg shadow-purple-500/20">
+  1549→                    <Wallet className="w-5 h-5 opacity-60 mb-1" />
+  1550→                    <p className="text-2xl font-black">{fmt(totalRevenue)}</p>
+  1551→                    <p className="text-[9px] opacity-70">إجمالي الإيرادات (ر.ي)</p>
+  1552→                  </div>
+  1553→                  <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl p-4 text-white shadow-lg shadow-blue-500/20">
+  1554→                    <Wifi className="w-5 h-5 opacity-60 mb-1" />
+  1555→                    <p className="text-2xl font-black">{fmt(networksList.length)}</p>
+  1556→                    <p className="text-[9px] opacity-70">الشبكات</p>
+  1557→                  </div>
+  1558→                </div>
+  1559→
+  1560→                {/* ─── Pending Requests ─── */}
+  1561→                {(pendingDeposits.length > 0 || pendingNetworkSubmissions.length > 0) && (
+  1562→                  <div className="space-y-2">
+  1563→                    <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+  1564→                      <AlertTriangle className="w-4 h-4 text-amber-500" />
+  1565→                      طلبات معلقة
+  1566→                    </h3>
+  1567→                    <div className="grid grid-cols-2 gap-3">
+  1568→                      {pendingDeposits.length > 0 && (
+  1569→                        <motion.button
+  1570→                          whileTap={{ scale: 0.97 }}
+  1571→                          onClick={() => setActiveTab("orders")}
+  1572→                          className="bg-gradient-to-br from-amber-400 to-orange-500 rounded-2xl p-4 text-white shadow-lg text-right"
+  1573→                        >
+  1574→                          <Receipt className="w-5 h-5 opacity-60 mb-1" />
+  1575→                          <p className="text-2xl font-black">{pendingDeposits.length}</p>
+  1576→                          <p className="text-[9px] opacity-70">طلبات إيداع معلقة</p>
+  1577→                          <p className="text-[8px] opacity-50 mt-0.5">اضغط للعرض</p>
+  1578→                        </motion.button>
+  1579→                      )}
+  1580→                      {pendingNetworkSubmissions.length > 0 && (
+  1581→                        <motion.button
+  1582→                          whileTap={{ scale: 0.97 }}
+  1583→                          onClick={() => setActiveTab("networkRequests")}
+  1584→                          className="bg-gradient-to-br from-purple-500 to-indigo-600 rounded-2xl p-4 text-white shadow-lg text-right"
+  1585→                        >
+  1586→                          <FileCheck className="w-5 h-5 opacity-60 mb-1" />
+  1587→                          <p className="text-2xl font-black">{pendingNetworkSubmissions.length}</p>
+  1588→                          <p className="text-[9px] opacity-70">طلبات شبكات معلقة</p>
+  1589→                          <p className="text-[8px] opacity-50 mt-0.5">اضغط للعرض</p>
+  1590→                        </motion.button>
+  1591→                      )}
+  1592→                    </div>
+  1593→                  </div>
+  1594→                )}
+  1595→
+  1596→                {/* ─── Additional Stats ─── */}
+  1597→                <div className="grid grid-cols-3 gap-3">
+  1598→                  <div className="bg-white rounded-2xl p-3 border border-gray-100 shadow-sm text-center">
+  1599→                    <Building2 className="w-4 h-4 text-blue-500 mx-auto mb-1" />
+  1600→                    <p className="text-lg font-black text-gray-900">{fmt(banksList.length)}</p>
+  1601→                    <p className="text-[8px] text-gray-400">حسابات بنكية</p>
+  1602→                  </div>
+  1603→                  <div className="bg-white rounded-2xl p-3 border border-gray-100 shadow-sm text-center">
+  1604→                    <Gift className="w-4 h-4 text-purple-500 mx-auto mb-1" />
+  1605→                    <p className="text-lg font-black text-gray-900">{fmt(redeemCodesList.filter(c => !c.isUsed).length)}</p>
+  1606→                    <p className="text-[8px] text-gray-400">أكواد نشطة</p>
+  1607→                  </div>
+  1608→                  <div className="bg-white rounded-2xl p-3 border border-gray-100 shadow-sm text-center">
+  1609→                    <Satellite className="w-4 h-4 text-sky-500 mx-auto mb-1" />
+  1610→                    <p className="text-lg font-black text-gray-900">{fmt(starOrdersList.filter(o => o.status === "pending").length)}</p>
+  1611→                    <p className="text-[8px] text-gray-400">طلبات Starlink</p>
+  1612→                  </div>
+  1613→                </div>
+  1614→
+  1615→                {/* ─── Networks by Province ─── */}
+  1616→                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+  1617→                  <h3 className="text-sm font-bold text-gray-900 mb-3 flex items-center gap-2">
+  1618→                    <Globe className="w-4 h-4 text-[#1B7A3D]" />
+  1619→                    الشبكات حسب المحافظة
+  1620→                  </h3>
+  1621→                  <div className="space-y-2">
+  1622→                    {PROVINCES.filter(p => networksList.some(n => n.provinceId === p.id)).map(province => {
+  1623→                      const provNets = networksList.filter(n => n.provinceId === province.id);
+  1624→                      const provCards = cardsList.filter(c => provNets.some(n => n.id === c.network));
+  1625→                      const provSold = provCards.filter(c => c.isUsed);
+  1626→                      return (
+  1627→                        <div key={province.id} className="flex items-center justify-between p-2 rounded-xl bg-gray-50">
+  1628→                          <div className="flex items-center gap-2">
+  1629→                            <div className="w-7 h-7 rounded-lg bg-[#E8F5E9] flex items-center justify-center text-xs">🏛️</div>
+  1630→                            <div>
+  1631→                              <p className="text-xs font-bold text-gray-900">{province.name}</p>
+  1632→                              <p className="text-[9px] text-gray-400">{provNets.length} شبكة • {provCards.length - provSold.length} كرت متاح</p>
+  1633→                            </div>
+  1634→                          </div>
+  1635→                          <span className="text-xs font-black text-[#1B7A3D]">{fmt(provSold.reduce((s, c) => s + (c.price || 0), 0))} ر.ي</span>
+  1636→                        </div>
+  1637→                      );
+  1638→                    })}
+  1639→                    {networksList.filter(n => !n.provinceId).length > 0 && (
+  1640→                      <div className="flex items-center justify-between p-2 rounded-xl bg-gray-50">
+  1641→                        <div className="flex items-center gap-2">
+  1642→                          <div className="w-7 h-7 rounded-lg bg-gray-100 flex items-center justify-center text-xs">🌐</div>
+  1643→                          <div>
+  1644→                            <p className="text-xs font-bold text-gray-900">بدون محافظة</p>
+  1645→                            <p className="text-[9px] text-gray-400">{networksList.filter(n => !n.provinceId).length} شبكة</p>
+  1646→                          </div>
+  1647→                        </div>
+  1648→                      </div>
+  1649→                    )}
+  1650→                  </div>
+  1651→                </div>
+  1652→
+  1653→                {/* ─── Revenue by Network (horizontal bar chart) ─── */}
+  1654→                <div className="bg-white rounded-2xl border border-gray-100 p-4">
+  1655→                  <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2 mb-3">
+  1656→                    <BarChart3 className="w-4 h-4 text-[#1B7A3D]" />
+  1657→                    الإيرادات حسب الشبكة
+  1658→                  </h3>
+  1659→                  <div className="space-y-3">
+  1660→                    {(() => {
+  1661→                      const netRevenue: Record<string, number> = {};
+  1662→                      soldCards.forEach(c => { netRevenue[c.network] = (netRevenue[c.network] || 0) + (c.price || 0); });
+  1663→                      const maxNetRev = Math.max(...Object.values(netRevenue), 1);
+  1664→                      return networksList.map(net => {
+  1665→                        const rev = netRevenue[net.id] || 0;
+  1666→                        const pct = Math.round((rev / maxNetRev) * 100);
+  1667→                        return (
+  1668→                          <div key={net.id}>
+  1669→                            <div className="flex items-center justify-between mb-1">
+  1670→                              <span className="text-xs font-bold text-gray-700">{net.emoji} {net.name}</span>
+  1671→                              <span className="text-xs font-black text-gray-900">{fmt(rev)} ر.ي</span>
+  1672→                            </div>
+  1673→                            <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+  1674→                              <motion.div
+  1675→                                initial={{ width: 0 }}
+  1676→                                animate={{ width: `${pct}%` }}
+  1677→                                transition={{ duration: 0.8, ease: "easeOut" }}
+  1678→                                className="h-full rounded-full"
+  1679→                                style={{ backgroundColor: net.color || "#1B7A3D" }}
+  1680→                              />
+  1681→                            </div>
+  1682→                          </div>
+  1683→                        );
+  1684→                      });
+  1685→                    })()}
+  1686→                  </div>
+  1687→                </div>
+  1688→
+  1689→                {/* ─── Card Sales by Tier (progress bars) ─── */}
+  1690→                <div className="bg-white rounded-2xl border border-gray-100 p-4">
+  1691→                  <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2 mb-3">
+  1692→                    <CreditCard className="w-4 h-4 text-[#1B7A3D]" />
+  1693→                    مبيعات الكروت حسب الفئة
+  1694→                  </h3>
+  1695→                  <div className="space-y-2.5">
+  1696→                    {(() => {
+  1697→                      const tierSales: Record<string, { sold: number; total: number; revenue: number }> = {};
+  1698→                      cardsList.forEach(c => {
+  1699→                        if (!tierSales[c.tier]) tierSales[c.tier] = { sold: 0, total: 0, revenue: 0 };
+  1700→                        tierSales[c.tier].total++;
+  1701→                        if (c.isUsed) { tierSales[c.tier].sold++; tierSales[c.tier].revenue += (c.price || 0); }
+  1702→                      });
+  1703→                      return tiersList.map(t => {
+  1704→                        const data = tierSales[t.tier] || { sold: 0, total: 0, revenue: 0 };
+  1705→                        const pct = data.total > 0 ? Math.round((data.sold / data.total) * 100) : 0;
+  1706→                        return (
+  1707→                          <div key={t.tier}>
+  1708→                            <div className="flex items-center justify-between mb-1">
+  1709→                              <span className="text-xs font-bold text-gray-700">{t.icon} فئة {t.tier} ({t.data})</span>
+  1710→                              <span className="text-[10px] text-gray-400">{data.sold}/{data.total} مباع ({pct}%)</span>
+  1711→                            </div>
+  1712→                            <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
+  1713→                              <motion.div
+  1714→                                initial={{ width: 0 }}
+  1715→                                animate={{ width: `${pct}%` }}
+  1716→                                transition={{ duration: 0.8, ease: "easeOut" }}
+  1717→                                className="h-full bg-gradient-to-l from-[#1B7A3D] to-[#22A24D] rounded-full"
+  1718→                              />
+  1719→                            </div>
+  1720→                            <p className="text-[9px] text-gray-400 mt-0.5">إيرادات: {fmt(data.revenue)} ر.ي</p>
+  1721→                          </div>
+  1722→                        );
+  1723→                      });
+  1724→                    })()}
+  1725→                  </div>
+  1726→                </div>
+  1727→
+  1728→                {/* ─── Recent 7 Days Revenue Trend ─── */}
+  1729→                <div className="bg-white rounded-2xl border border-gray-100 p-4">
+  1730→                  <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2 mb-3">
+  1731→                    <TrendingUp className="w-4 h-4 text-[#1B7A3D]" />
+  1732→                    إيرادات آخر 7 أيام
+  1733→                  </h3>
+  1734→                  <div className="flex items-end gap-2 h-32">
+  1735→                    {(() => {
+  1736→                      const days: { label: string; revenue: number }[] = [];
+  1737→                      for (let i = 6; i >= 0; i--) {
+  1738→                        const d = new Date();
+  1739→                        d.setDate(d.getDate() - i);
+  1740→                        const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  1741→                        const dayEnd = dayStart + 86400000;
+  1742→                        const rev = soldCards.filter(c => c.usedAt && c.usedAt >= dayStart && c.usedAt < dayEnd).reduce((s, c) => s + (c.price || 0), 0);
+  1743→                        days.push({ label: d.toLocaleDateString("ar-YE", { weekday: "short" }), revenue: rev });
+  1744→                      }
+  1745→                      const maxDayRev = Math.max(...days.map(d => d.revenue), 1);
+  1746→                      return days.map((day, i) => {
+  1747→                        const pct = Math.max(Math.round((day.revenue / maxDayRev) * 100), 4);
+  1748→                        return (
+  1749→                          <div key={i} className="flex-1 flex flex-col items-center gap-1">
+  1750→                            <span className="text-[8px] font-bold text-gray-700">{fmt(day.revenue)}</span>
+  1751→                            <motion.div
+  1752→                              initial={{ height: 0 }}
+  1753→                              animate={{ height: `${pct}%` }}
+  1754→                              transition={{ duration: 0.6, delay: i * 0.05 }}
+  1755→                              className="w-full bg-gradient-to-t from-[#1B7A3D] to-[#22A24D] rounded-t-lg min-h-[4px]"
+  1756→                            />
+  1757→                            <span className="text-[8px] text-gray-400">{day.label}</span>
+  1758→                          </div>
+  1759→                        );
+  1760→                      });
+  1761→                    })()}
+  1762→                  </div>
+  1763→                </div>
+  1764→
+  1765→                {/* ─── Deposit Status Breakdown ─── */}
+  1766→                <div className="bg-white rounded-2xl border border-gray-100 p-4">
+  1767→                  <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2 mb-3">
+  1768→                    <Banknote className="w-4 h-4 text-[#1B7A3D]" />
+  1769→                    حالة الإيداعات
+  1770→                  </h3>
+  1771→                  {(() => {
+  1772→                    const approved = depositsList.filter(d => d.status === "approved");
+  1773→                    const pending = depositsList.filter(d => d.status === "pending");
+  1774→                    const rejected = depositsList.filter(d => d.status === "rejected");
+  1775→                    const approvedAmt = approved.reduce((s, d) => s + (d.amount || 0), 0);
+  1776→                    const pendingAmt = pending.reduce((s, d) => s + (d.amount || 0), 0);
+  1777→                    const rejectedAmt = rejected.reduce((s, d) => s + (d.amount || 0), 0);
+  1778→                    const total = approvedAmt + pendingAmt + rejectedAmt || 1;
+  1779→                    return (
+  1780→                      <div className="space-y-3">
+  1781→                        <div className="flex h-4 rounded-full overflow-hidden bg-gray-100">
+  1782→                          <motion.div initial={{ width: 0 }} animate={{ width: `${(approvedAmt / total) * 100}%` }} transition={{ duration: 0.6 }} className="bg-[#1B7A3D]" />
+  1783→                          <motion.div initial={{ width: 0 }} animate={{ width: `${(pendingAmt / total) * 100}%` }} transition={{ duration: 0.6 }} className="bg-orange-400" />
+  1784→                          <motion.div initial={{ width: 0 }} animate={{ width: `${(rejectedAmt / total) * 100}%` }} transition={{ duration: 0.6 }} className="bg-red-400" />
+  1785→                        </div>
+  1786→                        <div className="grid grid-cols-3 gap-2">
+  1787→                          <div className="bg-[#E8F5E9] rounded-xl p-2.5 text-center">
+  1788→                            <p className="text-sm font-black text-[#1B7A3D]">{fmt(approvedAmt)}</p>
+  1789→                            <p className="text-[8px] text-gray-500">مقبول ({approved.length})</p>
+  1790→                          </div>
+  1791→                          <div className="bg-orange-50 rounded-xl p-2.5 text-center">
+  1792→                            <p className="text-sm font-black text-orange-600">{fmt(pendingAmt)}</p>
+  1793→                            <p className="text-[8px] text-gray-500">معلق ({pending.length})</p>
+  1794→                          </div>
+  1795→                          <div className="bg-red-50 rounded-xl p-2.5 text-center">
+  1796→                            <p className="text-sm font-black text-red-600">{fmt(rejectedAmt)}</p>
+  1797→                            <p className="text-[8px] text-gray-500">مرفوض ({rejected.length})</p>
+  1798→                          </div>
+  1799→                        </div>
+  1800→                      </div>
+  1801→                    );
+  1802→                  })()}
+  1803→                </div>
+  1804→
+  1805→                {/* ─── Monthly Revenue Comparison ─── */}
+  1806→                <div className="bg-white rounded-2xl border border-gray-100 p-4">
+  1807→                  <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2 mb-3">
+  1808→                    <TrendingUp className="w-4 h-4 text-[#1B7A3D]" />
+  1809→                    مقارنة الإيرادات الشهرية
+  1810→                  </h3>
+  1811→                  {(() => {
+  1812→                    const now = new Date();
+  1813→                    const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  1814→                    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime();
+  1815→                    const thisMonthRev = soldCards.filter(c => c.usedAt && c.usedAt >= thisMonthStart).reduce((s, c) => s + (c.price || 0), 0);
+  1816→                    const lastMonthRev = soldCards.filter(c => c.usedAt && c.usedAt >= lastMonthStart && c.usedAt < thisMonthStart).reduce((s, c) => s + (c.price || 0), 0);
+  1817→                    const maxMonth = Math.max(thisMonthRev, lastMonthRev, 1);
+  1818→                    const change = lastMonthRev > 0 ? Math.round(((thisMonthRev - lastMonthRev) / lastMonthRev) * 100) : 0;
+  1819→                    return (
+  1820→                      <div className="space-y-3">
+  1821→                        <div className="flex items-center justify-between">
+  1822→                          <span className="text-xs text-gray-500">هذا الشهر</span>
+  1823→                          <span className="text-sm font-black text-[#1B7A3D]">{fmt(thisMonthRev)} ر.ي</span>
+  1824→                        </div>
+  1825→                        <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+  1826→                          <motion.div initial={{ width: 0 }} animate={{ width: `${(thisMonthRev / maxMonth) * 100}%` }} transition={{ duration: 0.6 }} className="h-full bg-[#1B7A3D] rounded-full" />
+  1827→                        </div>
+  1828→                        <div className="flex items-center justify-between">
+  1829→                          <span className="text-xs text-gray-500">الشهر الماضي</span>
+  1830→                          <span className="text-sm font-black text-gray-600">{fmt(lastMonthRev)} ر.ي</span>
+  1831→                        </div>
+  1832→                        <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+  1833→                          <motion.div initial={{ width: 0 }} animate={{ width: `${(lastMonthRev / maxMonth) * 100}%` }} transition={{ duration: 0.6 }} className="h-full bg-gray-400 rounded-full" />
+  1834→                        </div>
+  1835→                        {change !== 0 && (
+  1836→                          <p className={`text-xs font-bold text-center ${change > 0 ? "text-[#1B7A3D]" : "text-red-500"}`}>
+  1837→                            {change > 0 ? "📈" : "📉"} {change > 0 ? "+" : ""}{change}% مقارنة بالشهر الماضي
+  1838→                          </p>
+  1839→                        )}
+  1840→                      </div>
+  1841→                    );
+  1842→                  })()}
+  1843→                </div>
+  1844→
+  1845→                {/* ─── Top 5 Users by Balance ─── */}
+  1846→                <div className="bg-white rounded-2xl border border-gray-100 p-4">
+  1847→                  <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2 mb-3">
+  1848→                    <Crown className="w-4 h-4 text-amber-500" />
+  1849→                    أعلى 5 مستخدمين رصيداً
+  1850→                  </h3>
+  1851→                  <div className="space-y-2">
+  1852→                    {Object.entries(userBalances)
+  1853→                      .sort(([, a], [, b]) => b - a)
+  1854→                      .slice(0, 5)
+  1855→                      .map(([uid, balance], i) => {
+  1856→                        const user = allUsers[uid];
+  1857→                        return (
+  1858→                          <div key={uid} className="flex items-center gap-2 p-2 rounded-xl bg-gray-50">
+  1859→                            <span className="w-6 h-6 rounded-full bg-amber-100 flex items-center justify-center text-[10px] font-black text-amber-600">{i + 1}</span>
+  1860→                            <div className="w-7 h-7 rounded-full bg-[#1B7A3D] flex items-center justify-center text-white text-[10px] font-bold">{(user?.displayName || "م")[0]}</div>
+  1861→                            <div className="flex-1 min-w-0">
+  1862→                              <p className="text-xs font-bold text-gray-900 truncate">{user?.displayName || "مستخدم"}</p>
+  1863→                            </div>
+  1864→                            <span className="text-xs font-black text-[#1B7A3D]">{fmt(balance)} ر.ي</span>
+  1865→                          </div>
+  1866→                        );
+  1867→                      })}
+  1868→                  </div>
+  1869→                </div>
+  1870→
+  1871→                {/* ─── Additional KPIs ─── */}
+  1872→                <div className="grid grid-cols-3 gap-2">
+  1873→                  <div className="bg-white rounded-2xl border border-gray-100 p-3 text-center">
+  1874→                    <Satellite className="w-4 h-4 text-blue-500 mx-auto mb-1" />
+  1875→                    <p className="text-sm font-black text-gray-900">{fmt(starOrdersList.length)}</p>
+  1876→                    <p className="text-[8px] text-gray-400">طلبات Starlink</p>
+  1877→                    <p className="text-[8px] text-blue-500">{fmt(starOrdersList.reduce((s, o) => s + (o.priceUSD || 0), 0))}$</p>
+  1878→                  </div>
+  1879→                  <div className="bg-white rounded-2xl border border-gray-100 p-3 text-center">
+  1880→                    <Crown className="w-4 h-4 text-amber-500 mx-auto mb-1" />
+  1881→                    <p className="text-sm font-black text-gray-900">{fmt(subsList.filter(s => s.isActive).length)}</p>
+  1882→                    <p className="text-[8px] text-gray-400">اشتراكات نشطة</p>
+  1883→                  </div>
+  1884→                  <div className="bg-white rounded-2xl border border-gray-100 p-3 text-center">
+  1885→                    <Banknote className="w-4 h-4 text-green-500 mx-auto mb-1" />
+  1886→                    <p className="text-sm font-black text-gray-900">{fmt(commEntriesList.reduce((s, e) => s + (e.commissionAmount || 0), 0))}</p>
+  1887→                    <p className="text-[8px] text-gray-400">إجمالي العمولات</p>
+  1888→                    <p className="text-[8px] text-red-400">غير مدفوع: {fmt(commEntriesList.filter(e => !e.isPaid).reduce((s, e) => s + (e.commissionAmount || 0), 0))}</p>
+  1889→                  </div>
+  1890→                </div>
+  1891→
+  1892→                {/* ─── Average Balance ─── */}
+  1893→                <div className="grid grid-cols-2 gap-2">
+  1894→                  <div className="bg-white rounded-2xl border border-gray-100 p-3 text-center">
+  1895→                    <p className="text-sm font-black text-gray-900">
+  1896→                      {fmt(Object.values(userBalances).length > 0 ? Math.round(Object.values(userBalances).reduce((a, b) => a + b, 0) / Object.values(userBalances).length) : 0)}
+  1897→                    </p>
+  1898→                    <p className="text-[8px] text-gray-400">متوسط الرصيد لكل مستخدم</p>
+  1899→                  </div>
+  1900→                  <div className="bg-white rounded-2xl border border-gray-100 p-3 text-center">
+  1901→                    <p className="text-sm font-black text-gray-900">
+  1902→                      {fmt(Object.values(userBalances).reduce((a, b) => a + b, 0))}
+  1903→                    </p>
+  1904→                    <p className="text-[8px] text-gray-400">إجمالي الأرصدة المعلقة</p>
+  1905→                  </div>
+  1906→                </div>
+  1907→
+  1908→                {/* ─── Activity Timeline (Recent 10 transactions) ─── */}
+  1909→                <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+  1910→                  <div className="p-4 border-b border-gray-50">
+  1911→                    <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2"><Clock className="w-4 h-4 text-gray-400" />سجل النشاطات الأخيرة</h3>
+  1912→                  </div>
+  1913→                  <div className="max-h-72 overflow-y-auto">
+  1914→                    {(() => {
+  1915→                      const allActivities: { type: string; description: string; amount: number; date: number; userName: string; icon: string; color: string }[] = [];
+  1916→                      // Deposits
+  1917→                      depositsList.slice(0, 5).forEach(d => {
+  1918→                        allActivities.push({ type: "deposit", description: `إيداع ${fmt(d.amount)} ر.ي`, amount: d.amount, date: d.createdAt, userName: d.userName || "مستخدم", icon: "💰", color: d.status === "approved" ? "text-[#1B7A3D]" : d.status === "pending" ? "text-orange-500" : "text-red-500" });
+  1919→                      });
+  1920→                      // Card purchases
+  1921→                      soldCards.sort((a, b) => (b.usedAt || 0) - (a.usedAt || 0)).slice(0, 5).forEach(c => {
+  1922→                        const user = allUsers[c.usedBy || ""];
+  1923→                        allActivities.push({ type: "purchase", description: `شراء كرت فئة ${c.tier}`, amount: c.price, date: c.usedAt || 0, userName: user?.displayName || "مستخدم", icon: "🛒", color: "text-blue-500" });
+  1924→                      });
+  1925→                      // Starlink orders
+  1926→                      starOrdersList.slice(0, 3).forEach(o => {
+  1927→                        allActivities.push({ type: "starlink", description: `طلب Starlink - ${o.productName}`, amount: o.priceUSD, date: o.createdAt, userName: o.userName || "مستخدم", icon: "🛰️", color: "text-purple-500" });
+  1928→                      });
+  1929→                      // Sort by date
+  1930→                      allActivities.sort((a, b) => b.date - a.date);
+  1931→                      return allActivities.slice(0, 10).map((act, i) => (
+  1932→                        <div key={i} className="px-4 py-2.5 border-b border-gray-50 flex items-center gap-2">
+  1933→                          <span className="text-base">{act.icon}</span>
+  1934→                          <div className="flex-1 min-w-0">
+  1935→                            <p className={`text-xs font-bold ${act.color} truncate`}>{act.description}</p>
+  1936→                            <p className="text-[9px] text-gray-400">{act.userName} • {formatDate(act.date)}</p>
+  1937→                          </div>
+  1938→                        </div>
+  1939→                      ));
+  1940→                    })()}
+  1941→                    {(() => {
+  1942→                      const totalActs = depositsList.length + soldCards.length + starOrdersList.length;
+  1943→                      return totalActs === 0 ? <div className="p-4 text-center text-xs text-gray-400">لا توجد نشاطات</div> : null;
+  1944→                    })()}
+  1945→                  </div>
+  1946→                </div>
+  1947→              </motion.div>
+  1948→            )}
+  1949→
+  1950→            {/* ═══ TAB 2: أرصدة ═══ */}
+  1951→            {activeTab === "balances" && (
+  1952→              <motion.div key="balances" variants={sectionVariants} initial="initial" animate="animate" exit="exit" transition={iOSSpring.gentle} className="space-y-4">
+  1953→                {/* ─── Send/Withdraw Balance ─── */}
+  1954→                <div className="bg-white rounded-2xl border border-gray-100 p-4">
+  1955→                  <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2 mb-3">
+  1956→                    <Wallet className="w-4 h-4 text-[#1B7A3D]" />
+  1957→                    إدارة الأرصدة
+  1958→                  </h3>
+  1959→                  {/* Action Toggle */}
+  1960→                  <div className="flex gap-2 mb-4">
+  1961→                    <motion.button
+  1962→                      whileTap={{ scale: 0.97 }}
+  1963→                      onClick={() => setBalanceAction("credit")}
+  1964→                      className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all ${balanceAction === "credit" ? "bg-[#1B7A3D] text-white shadow-md" : "bg-gray-50 text-gray-500"}`}
+  1965→                    >
+  1966→                      <Send className="w-3.5 h-3.5 inline ml-1" />
+  1967→                      إرسال رصيد
+  1968→                    </motion.button>
+  1969→                    <motion.button
+  1970→                      whileTap={{ scale: 0.97 }}
+  1971→                      onClick={() => setBalanceAction("debit")}
+  1972→                      className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all ${balanceAction === "debit" ? "bg-red-500 text-white shadow-md" : "bg-gray-50 text-gray-500"}`}
+  1973→                    >
+  1974→                      <Download className="w-3.5 h-3.5 inline ml-1" />
+  1975→                      سحب رصيد
+  1976→                    </motion.button>
+  1977→                  </div>
+  1978→
+  1979→                  {/* Select User */}
+  1980→                  <div className="space-y-3">
+  1981→                    <div>
+  1982→                      <label className="text-[10px] font-bold text-gray-500 mb-1 block">اختر المستخدم</label>
+  1983→                      <select
+  1984→                        value={balanceUserId}
+  1985→                        onChange={e => setBalanceUserId(e.target.value)}
+  1986→                        className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm font-bold"
+  1987→                      >
+  1988→                        <option value="">-- اختر مستخدم --</option>
+  1989→                        {usersList
+  1990→                          .filter(u => balanceSearch ? (u.displayName || "").includes(balanceSearch) || (u.email || "").includes(balanceSearch) : true)
+  1991→                          .map(u => (
+  1992→                            <option key={u.id} value={u.id}>
+  1993→                              {u.displayName || "بدون اسم"} ({u.email}) - رصيد: {fmt(userBalances[u.id] || 0)} ر.ي
+  1994→                            </option>
+  1995→                          ))}
+  1996→                      </select>
+  1997→                    </div>
+  1998→
+  1999→                    {balanceUserId && (
+  2000→                      <div className="bg-gray-50 rounded-xl p-3 flex items-center gap-3">
+
+[showing lines 1-2000 of 3838; use offset=2001 with limit to continue reading]

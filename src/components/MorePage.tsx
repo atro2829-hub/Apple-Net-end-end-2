@@ -7,7 +7,7 @@ import {
   Info, Instagram, Facebook, Phone, Mail, Globe, MessageCircle,
   Heart, Star, Code, ShieldCheck, Crown, Wifi, Download,
   Clock, ToggleLeft, ToggleRight, CreditCard, Calendar, Sparkles,
-  FileText, HeadphonesIcon, Scale, User as UserIcon
+  FileText, HeadphonesIcon, Scale, User as UserIcon, Fingerprint, Lock
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +21,7 @@ import { iOSSpring, formatDate, generateWhatsAppLink, ADMIN_WHATSAPP } from "@/l
 import type { AppUser, SubscriptionPlan, UserSubscription } from "@/lib/types";
 import type { User } from "firebase/auth";
 import { useLanguage } from "@/context/LanguageContext";
+import { BiometricAuth } from "@/components/BiometricAuth";
 
 interface MorePageProps {
   user: User | null;
@@ -401,6 +402,17 @@ export function MorePage({ user, isAdmin, onAuthClick, onNavigate }: MorePagePro
               </motion.div>
             )}
           </AnimatePresence>
+        </div>
+      )}
+
+      {/* ====== Security & Authentication Section ====== */}
+      {user && (
+        <div className="mb-4">
+          <h3 className="text-xs font-bold text-gray-500 dark:text-slate-400 mb-2 px-1 flex items-center gap-1.5">
+            <ShieldCheck className="w-3.5 h-3.5" />
+            {isRTL ? "الأمان والخصوصية" : "Security & Privacy"}
+          </h3>
+          <BiometricAuth user={user} />
         </div>
       )}
 

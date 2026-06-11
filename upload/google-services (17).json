@@ -1,0 +1,49 @@
+{
+  "project_info": {
+    "project_number": "164323561264",
+    "firebase_url": "https://applenet711-default-rtdb.firebaseio.com",
+    "project_id": "applenet711",
+    "storage_bucket": "applenet711.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:164323561264:android:9e08346bd31559eb60c2f5",
+        "android_client_info": {
+          "package_name": "com.applenet.admin"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDeQMrepTnlldqGycyMzy1qeoaD3g7nxgA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:164323561264:android:2000f0cc595b6d7260c2f5",
+        "android_client_info": {
+          "package_name": "com.applenet.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDeQMrepTnlldqGycyMzy1qeoaD3g7nxgA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
