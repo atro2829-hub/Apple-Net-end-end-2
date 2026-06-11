@@ -65,3 +65,9 @@ capacitor-admin/node_modules/
 
 # Uploads (user-generated content)
 public/uploads/
+# Sensitive files - NEVER commit
+firebase-admin-sdk.json
+google-services.json
+upload/*.json
+android/app/google-services.json
+android/app/src/main/assets/google-services.json
