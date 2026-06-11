@@ -96,8 +96,21 @@ jobs:
 
       - name: Build Next.js static export (User)
         run: |
-          # Temporarily add output: "export" for static build
-          sed -i 's/const nextConfig: NextConfig = {/const nextConfig: NextConfig = {\n  output: "export",/' next.config.ts
+          # Add output: "export" and skip API routes for static build
+          cat > next.config.export.ts << 'EXPORTCONFIG'
+          import type { NextConfig } from "next";
+          const nextConfig: NextConfig = {
+            trailingSlash: true,
+            output: "export",
+            typescript: { ignoreBuildErrors: true },
+            eslint: { ignoreDuringBuilds: true },
+            reactStrictMode: false,
+            images: { unoptimized: true },
+          };
+          export default nextConfig;
+          EXPORTCONFIG
+          mv next.config.ts next.config.dev.ts && mv next.config.export.ts next.config.ts
+          rm -rf src/app/api
           bun run build
         env:
           DATABASE_URL: "file:./dev.db"
@@ -168,8 +181,21 @@ jobs:
         run: |
           # Copy admin capacitor config
           cp capacitor-admin/capacitor.config.ts capacitor.config.ts
-          # Add output: "export" for static build
-          sed -i 's/const nextConfig: NextConfig = {/const nextConfig: NextConfig = {\n  output: "export",/' next.config.ts
+          # Create export config
+          cat > next.config.export.ts << 'EXPORTCONFIG'
+          import type { NextConfig } from "next";
+          const nextConfig: NextConfig = {
+            trailingSlash: true,
+            output: "export",
+            typescript: { ignoreBuildErrors: true },
+            eslint: { ignoreDuringBuilds: true },
+            reactStrictMode: false,
+            images: { unoptimized: true },
+          };
+          export default nextConfig;
+          EXPORTCONFIG
+          mv next.config.ts next.config.dev.ts && mv next.config.export.ts next.config.ts
+          rm -rf src/app/api
           bun run build
         env:
           DATABASE_URL: "file:./dev.db"
