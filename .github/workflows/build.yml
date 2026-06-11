@@ -84,7 +84,7 @@ jobs:
       - name: Install dependencies
         run: |
           npm install -g @capacitor/cli
-          bun install
+          bun install --no-save
 
       - name: Create Firebase Admin SDK file
         run: echo '${{ secrets.FIREBASE_ADMIN_SDK }}' > firebase-admin-sdk.json
@@ -149,7 +149,7 @@ jobs:
       - name: Install dependencies
         run: |
           npm install -g @capacitor/cli
-          bun install
+          bun install --no-save
 
       - name: Create Firebase Admin SDK file
         run: echo '${{ secrets.FIREBASE_ADMIN_SDK }}' > firebase-admin-sdk.json
