@@ -45,6 +45,7 @@ import { CardsPage } from "@/components/CardsPage";
 import { PurchasedPage } from "@/components/PurchasedPage";
 import { CreditPage } from "@/components/CreditPage";
 import { DepositPage } from "@/components/DepositPage";
+import { TelecomRechargePage } from "@/components/TelecomRechargePage";
 import { BanksPage } from "@/components/BanksPage";
 import { SimsPage } from "@/components/SimsPage";
 import { AdsPage } from "@/components/AdsPage";
@@ -589,6 +590,7 @@ export default function AppleNetApp() {
           {activeTab === "credit" && <motion.div key="page-credit" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}><CreditPage user={user} onAuthClick={() => setShowAuth(true)} onNavigate={setActiveTab} /></motion.div>}
           {activeTab === "purchased" && <motion.div key="page-purchased" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}><PurchasedPage user={user} onAuthClick={() => setShowAuth(true)} /></motion.div>}
           {activeTab === "banks" && <motion.div key="page-banks" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}><BanksPage /></motion.div>}
+          {activeTab === "telecom" && <motion.div key="page-telecom" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}><TelecomRechargePage user={user} onAuthClick={() => setShowAuth(true)} /></motion.div>}
           {activeTab === "sims" && <motion.div key="page-sims" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}><SimsPage /></motion.div>}
           {activeTab === "ads" && <motion.div key="page-ads" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}><AdsPage /></motion.div>}
           {activeTab === "more" && <motion.div key="page-more" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}><MorePage user={user} isAdmin={isAdmin} onAuthClick={() => setShowAuth(true)} onNavigate={setActiveTab} /></motion.div>}

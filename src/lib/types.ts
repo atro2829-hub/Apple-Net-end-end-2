@@ -328,3 +328,88 @@ export interface MonthlyPayout {
   createdAt: number;
   entries: string[];
 }
+
+// ========== سداد الاتصالات ==========
+
+// مزود خدمة API
+export interface TelecomProvider {
+  id: string;
+  name: string;
+  nameEn: string;
+  apiUrl: string;
+  apiKey: string;
+  method: "POST" | "GET";
+  headers: Record<string, string>;
+  bodyTemplate: string; // JSON template with {{variables}}
+  responseMapping: {
+    successField: string;
+    messageField: string;
+    transactionIdField: string;
+  };
+  balanceCheckUrl?: string;
+  isActive: boolean;
+  createdAt: number;
+}
+
+// شبكة اتصالات محلية
+export interface TelecomNetwork {
+  id: string;
+  name: string;
+  nameEn: string;
+  color: string;
+  bgColor: string;
+  icon: string;
+  prefixes: string[];
+  isActive: boolean;
+  providerId: string | null;
+  subCategories: TelecomSubCategory[];
+  createdAt: number;
+}
+
+// فئة فرعية للشبكة (مثل: سبافون جنوب، سبافون عدن)
+export interface TelecomSubCategory {
+  id: string;
+  name: string;
+  nameEn: string;
+  regionCode: string;
+  isActive: boolean;
+}
+
+// باقة اتصالات
+export interface TelecomPackage {
+  id: string;
+  name: string;
+  nameEn: string;
+  price: number;
+  wholesalePrice?: number;
+  description: string;
+  descriptionEn: string;
+  dataAmount?: string;
+  duration?: number;
+  durationUnit?: string;
+  type: "recharge" | "internet" | "voice";
+  isActive: boolean;
+  subCategoryId?: string;
+  networkId: string;
+  productCode?: string; // كود المنتج لدى مزود الخدمة
+  createdAt: number;
+}
+
+// عملية سداد اتصالات
+export interface TelecomTransaction {
+  id: string;
+  userId: string;
+  userName: string;
+  phoneNumber: string;
+  networkId: string;
+  networkName: string;
+  packageId: string;
+  packageName: string;
+  amount: number;
+  status: "pending" | "processing" | "success" | "failed";
+  providerId: string | null;
+  providerTransactionId: string | null;
+  providerResponse: string | null;
+  createdAt: number;
+  completedAt: number | null;
+}

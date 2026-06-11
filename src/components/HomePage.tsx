@@ -311,7 +311,7 @@ export function HomePage({ user, isAdmin, onAuthClick, onNavigate }: HomePagePro
               { icon: Wifi, label: t("home.cards"), color: "bg-[#E8F5E9] dark:bg-green-900/30 text-[#1B7A3D]", action: () => onNavigate("cards") },
               { icon: CreditCard, label: t("home.deposit"), color: "bg-blue-50 dark:bg-blue-900/30 text-blue-500 dark:text-blue-400", action: () => onNavigate("deposit") },
               { icon: Satellite, label: "Starlink", color: "bg-purple-50 dark:bg-purple-900/30 text-purple-500 dark:text-purple-400", action: () => onNavigate("starlink") },
-              { icon: Building2, label: t("home.banks"), color: "bg-orange-50 dark:bg-orange-900/30 text-orange-500 dark:text-orange-400", action: () => onNavigate("banks") },
+              { icon: Smartphone, label: t("home.telecom"), color: "bg-orange-50 dark:bg-orange-900/30 text-orange-500 dark:text-orange-400", action: () => onNavigate("telecom") },
             ].map((item, i) => (
               <motion.div
                 key={i}

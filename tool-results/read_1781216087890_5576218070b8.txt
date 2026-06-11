@@ -1,0 +1,970 @@
+     1→"use client";
+     2→
+     3→import React, { useState, useEffect, useRef } from "react";
+     4→import { motion, AnimatePresence } from "framer-motion";
+     5→import {
+     6→  Wallet, Shield, Receipt, TrendingUp, CreditCard, LogIn, Ticket, X, Check,
+     7→  Sparkles, Star, Clock, Crown, MapPin, Filter, Phone, Wifi, PiggyBank,
+     8→  ShoppingBag, Gift, RotateCcw, DollarSign, ArrowLeft, Plus
+     9→} from "lucide-react";
+    10→import { Button } from "@/components/ui/button";
+    11→import { Input } from "@/components/ui/input";
+    12→import { Badge } from "@/components/ui/badge";
+    13→import { db } from "@/lib/firebase";
+    14→import { ref, onValue, get, update, push, set, runTransaction, remove } from "firebase/database";
+    15→import { ADEN_DISTRICTS, formatDate } from "@/lib/constants";
+    16→import { normalizeCode } from "@/lib/utils";
+    17→import type { CreditHistory, SubscriptionPlan, UserSubscription, NetworkItem, CardItem } from "@/lib/types";
+    18→import type { User } from "firebase/auth";
+    19→import { toast } from "sonner";
+    20→import { useLanguage } from "@/context/LanguageContext";
+    21→
+    22→interface CreditPageProps {
+    23→  user: User | null;
+    24→  onAuthClick: () => void;
+    25→  onNavigate?: (tab: string) => void;
+    26→}
+    27→
+    28→// Icon + color mapping for each credit history type
+    29→// Using labelKey instead of label so translation is resolved inside the component
+    30→const HISTORY_TYPE_CONFIG: Record<string, { icon: React.ElementType; bg: string; iconColor: string; labelKey: string; sign: string }> = {
+    31→  deposit:   { icon: PiggyBank,  bg: "bg-[#E8F5E9]", iconColor: "text-[#1B7A3D]", labelKey: "credit.deposit",     sign: "+" },
+    32→  purchase:  { icon: ShoppingBag, bg: "bg-red-50",     iconColor: "text-red-500",   labelKey: "credit.purchase",    sign: "-" },
+    33→  gift:      { icon: Gift,        bg: "bg-purple-50",  iconColor: "text-purple-500", labelKey: "credit.gift",       sign: "+" },
+    34→  redeem:    { icon: Ticket,      bg: "bg-sky-50",     iconColor: "text-sky-500",    labelKey: "credit.redeem",     sign: "+" },
+    35→  commission:{ icon: DollarSign,  bg: "bg-amber-50",   iconColor: "text-amber-500",  labelKey: "credit.commission", sign: "+" },
+    36→  refund:    { icon: RotateCcw,   bg: "bg-teal-50",    iconColor: "text-teal-500",   labelKey: "credit.refund",     sign: "+" },
+    37→};
+    38→
+    39→function getTypeConfig(type: string) {
+    40→  return HISTORY_TYPE_CONFIG[type] || HISTORY_TYPE_CONFIG.deposit;
+    41→}
+    42→
+    43→export function CreditPage({ user, onAuthClick, onNavigate }: CreditPageProps) {
+    44→  const { t, isRTL } = useLanguage();
+    45→
+    46→  const [balance, setBalance] = useState(0);
+    47→  const [history, setHistory] = useState<CreditHistory[]>([]);
+    48→  const [showRedeem, setShowRedeem] = useState(false);
+    49→  const [redeemCode, setRedeemCode] = useState("");
+    50→  const [isRedeeming, setIsRedeeming] = useState(false);
+    51→  const [maxBalance, setMaxBalance] = useState(0);
+    52→  const [plans, setPlans] = useState<Record<string, SubscriptionPlan>>({});
+    53→  const [mySubscription, setMySubscription] = useState<UserSubscription | null>(null);
+    54→  const [isSubscribing, setIsSubscribing] = useState(false);
+    55→  const [showPlans, setShowPlans] = useState(false);
+    56→  const [districtFilter, setDistrictFilter] = useState<string>("all");
+    57→  const [fbNetworks, setFbNetworks] = useState<NetworkItem[]>([]);
+    58→  const [allCards, setAllCards] = useState<CardItem[]>([]);
+    59→  const [fbDistricts, setFbDistricts] = useState<string[]>(ADEN_DISTRICTS);
+    60→  const [showDistricts, setShowDistricts] = useState(false);
+    61→  const [showHistory, setShowHistory] = useState(true);
+    62→  const [redeemSuccess, setRedeemSuccess] = useState<{ amount: number; visible: boolean } | null>(null);
+    63→  const redeemSectionRef = useRef<HTMLDivElement>(null);
+    64→
+    65→  useEffect(() => {
+    66→    if (showRedeem && redeemSectionRef.current) {
+    67→      setTimeout(() => {
+    68→        redeemSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    69→      }, 100);
+    70→    }
+    71→  }, [showRedeem]);
+    72→
+    73→  useEffect(() => {
+    74→    const unsubs: (() => void)[] = [];
+    75→    // Load networks
+    76→    const netUnsub = onValue(ref(db, "networks"), (snap) => {
+    77→      const data = snap.val();
+    78→      if (data) {
+    79→        setFbNetworks(Object.entries(data).map(([id, val]: [string, unknown]) => ({ id, ...(val as Record<string, unknown>) })) as NetworkItem[]);
+    80→      }
+    81→    });
+    82→    unsubs.push(netUnsub);
+    83→    // Load cards
+    84→    const cardsUnsub = onValue(ref(db, "cards"), (snap) => {
+    85→      const data = snap.val();
+    86→      setAllCards(data ? Object.entries(data).map(([id, val]: [string, unknown]) => ({ id, ...(val as Record<string, unknown>) })) as CardItem[] : []);
+    87→    });
+    88→    unsubs.push(cardsUnsub);
+    89→    // Load districts from settings
+    90→    const distUnsub = onValue(ref(db, "settings/districts"), (snap) => {
+    91→      const data = snap.val();
+    92→      if (data && Array.isArray(data)) setFbDistricts(data);
+    93→    });
+    94→    unsubs.push(distUnsub);
+    95→
+    96→    if (user) {
+    97→      const unsub1 = onValue(ref(db, `credit/${user.uid}/amount`), (snap) => setBalance(snap.val() || 0));
+    98→      const unsub2 = onValue(ref(db, `credit/${user.uid}/history`), (snap) => {
+    99→        const data = snap.val();
+   100→        if (data) {
+   101→          setHistory(Object.entries(data).map(([id, val]: [string, unknown]) => ({ id, ...(val as Record<string, unknown>) })).sort((a: CreditHistory, b: CreditHistory) => (b.date || 0) - (a.date || 0)) as CreditHistory[]);
+   102→        }
+   103→      });
+   104→      const unsub3 = onValue(ref(db, "settings/maxBalance"), (snap) => setMaxBalance(snap.val() || 0));
+   105→      const unsub4 = onValue(ref(db, "subscriptionPlans"), (snap) => setPlans(snap.val() || {}));
+   106→      const unsub5 = onValue(ref(db, `userSubscriptions/${user.uid}`), async (snap) => {
+   107→        const data = snap.val();
+   108→        if (data) {
+   109→          const sub = data as UserSubscription;
+   110→          // Check if subscription expired
+   111→          if (sub.expiresAt && sub.expiresAt < Date.now() && sub.isActive) {
+   112→            // Auto-renew check - read fresh data from Firebase
+   113→            if (sub.autoRenew) {
+   114→              try {
+   115→                const planSnap = await get(ref(db, `subscriptionPlans/${sub.planId}`));
+   116→                const plan = planSnap.val() as SubscriptionPlan | null;
+   117→                const creditSnap = await get(ref(db, `credit/${user!.uid}/amount`));
+   118→                const currentBal = creditSnap.val() || 0;
+   119→                if (plan && currentBal >= plan.price) {
+   120→                  // Use runTransaction on amount for atomic deduction
+   121→                  const amountRef = ref(db, `credit/${user!.uid}/amount`);
+   122→                  const renewResult = await runTransaction(amountRef, (cur) => {
+   123→                    const bal = (cur || 0) as number;
+   124→                    if (bal < plan.price) return; // abort
+   125→                    return bal - plan.price;
+   126→                  });
+   127→                  if (renewResult.committed) {
+   128→                    await update(ref(db, `credit/${user!.uid}`), { updatedAt: Date.now() });
+   129→                    const histRef = push(ref(db, `credit/${user!.uid}/history`));
+   130→                    await set(histRef, { type: "purchase", amount: plan.price, description: `${t("credit.renewSubscriptionDesc")} ${plan.name}`, date: Date.now() });
+   131→                    await update(ref(db, `userSubscriptions/${user!.uid}`), {
+   132→                      activatedAt: Date.now(),
+   133→                      expiresAt: Date.now() + plan.durationDays * 86400000,
+   134→                      isActive: true,
+   135→                    });
+   136→                    toast.success(`${t("credit.renewAutoSuccess")} ${plan.name} ${t("credit.automatically")}`);
+   137→                  } else {
+   138→                    await update(ref(db, `userSubscriptions/${user!.uid}`), { isActive: false });
+   139→                    toast.info(t("credit.subscriptionExpired"));
+   140→                  }
+   141→                } else {
+   142→                  await update(ref(db, `userSubscriptions/${user!.uid}`), { isActive: false });
+   143→                  toast.info(t("credit.subscriptionExpired"));
+   144→                }
+   145→              } catch {
+   146→                await update(ref(db, `userSubscriptions/${user!.uid}`), { isActive: false });
+   147→              }
+   148→            } else {
+   149→              await update(ref(db, `userSubscriptions/${user!.uid}`), { isActive: false });
+   150→            }
+   151→          }
+   152→          setMySubscription(sub.isActive && (!sub.expiresAt || sub.expiresAt > Date.now()) ? sub : null);
+   153→        } else {
+   154→          setMySubscription(null);
+   155→        }
+   156→      });
+   157→      unsubs.push(unsub1, unsub2, unsub3, unsub4, unsub5);
+   158→    } else {
+   159→      setBalance(0);
+   160→      setHistory([]);
+   161→      setMySubscription(null);
+   162→    }
+   163→    return () => unsubs.forEach(u => u());
+   164→  }, [user, t]);
+   165→
+   166→  const activePlans = Object.entries(plans).filter(([, p]) => p.isActive).map(([id, p]) => ({ id, ...p }));
+   167→
+   168→  // normalizeCode is imported from @/lib/utils
+   169→
+   170→  const handleRedeemCode = async () => {
+   171→    if (!user || !redeemCode.trim()) {
+   172→      toast.error(t("credit.enterCodeFirst"));
+   173→      return;
+   174→    }
+   175→    setIsRedeeming(true);
+   176→    try {
+   177→      const enteredCode = normalizeCode(redeemCode);
+   178→      console.log("[Redeem] Normalized code:", enteredCode, "length:", enteredCode.length);
+   179→
+   180→      if (enteredCode.length < 4) {
+   181→        toast.error(t("credit.codeTooShort"));
+   182→        setIsRedeeming(false);
+   183→        return;
+   184→      }
+   185→
+   186→      // ─── Ensure credit record exists ──────────────────
+   187→      const creditSnap = await get(ref(db, `credit/${user.uid}`));
+   188→      if (!creditSnap.exists()) {
+   189→        await set(ref(db, `credit/${user.uid}`), { amount: 0, updatedAt: Date.now() });
+   190→        console.log("[Redeem] Created credit record for user");
+   191→      }
+   192→
+   193→      // 1) Check shared redeem code lookup first (mass charge codes)
+   194→      const sharedLookupSnap = await get(ref(db, `sharedRedeemCodeLookup/${enteredCode}`));
+   195→      const sharedLookupData = sharedLookupSnap.val() as { pushId: string; amount: number; maxRedemptions: number; currentRedemptions: number; isActive: boolean } | null;
+   196→
+   197→      if (sharedLookupData) {
+   198→        console.log("[Redeem] Found shared code:", sharedLookupData);
+   199→
+   200→        if (sharedLookupData.isActive === false) {
+   201→          toast.error(t("credit.codeDisabled"));
+   202→          setIsRedeeming(false);
+   203→          return;
+   204→        }
+   205→
+   206→        if (sharedLookupData.currentRedemptions >= sharedLookupData.maxRedemptions) {
+   207→          toast.error(t("credit.codeMaxReached"));
+   208→          setIsRedeeming(false);
+   209→          return;
+   210→        }
+   211→
+   212→        const redeemedBySnap = await get(ref(db, `sharedRedeemCodes/${sharedLookupData.pushId}/redeemedBy/${user.uid}`));
+   213→        if (redeemedBySnap.exists()) {
+   214→          toast.error(t("credit.codeAlreadyUsed"));
+   215→          setIsRedeeming(false);
+   216→          return;
+   217→        }
+   218→
+   219→        const codeAmount = sharedLookupData.amount;
+   220→        if (codeAmount <= 0) {
+   221→          toast.error(t("credit.codeInvalid"));
+   222→          setIsRedeeming(false);
+   223→          return;
+   224→        }
+   225→
+   226→        // Add credit atomically
+   227→        const amountRef = ref(db, `credit/${user.uid}/amount`);
+   228→        let actualAmount = codeAmount;
+   229→        const creditResult = await runTransaction(amountRef, (currentAmount) => {
+   230→          const bal = (currentAmount || 0) as number;
+   231→          let newBal = bal + codeAmount;
+   232→          if (maxBalance > 0 && newBal > maxBalance) {
+   233→            actualAmount = Math.max(maxBalance - bal, 0);
+   234→            if (actualAmount <= 0) return bal;
+   235→            newBal = maxBalance;
+   236→          }
+   237→          return newBal;
+   238→        });
+   239→
+   240→        if (!creditResult.committed || actualAmount <= 0) {
+   241→          toast.error(`${t("credit.balanceCeiling")} ${maxBalance.toLocaleString()} ${t("credit.riyalShort")}`);
+   242→          setIsRedeeming(false);
+   243→          return;
+   244→        }
+   245→
+   246→        // Atomically increment currentRedemptions and add user to redeemedBy
+   247→        const sharedCodeRef = ref(db, `sharedRedeemCodes/${sharedLookupData.pushId}`);
+   248→        const transactionResult = await runTransaction(sharedCodeRef, (currentData) => {
+   249→          if (currentData === null) return null;
+   250→          const data = currentData as Record<string, unknown>;
+   251→          if (data.isActive === false) return;
+   252→          const currentRedemptions = (data.currentRedemptions as number) || 0;
+   253→          const maxRedemptions = (data.maxRedemptions as number) || 0;
+   254→          if (currentRedemptions >= maxRedemptions) return;
+   255→          const redeemedBy = (data.redeemedBy as Record<string, unknown>) || {};
+   256→          if (redeemedBy[user.uid]) return;
+   257→          return {
+   258→            ...data,
+   259→            currentRedemptions: currentRedemptions + 1,
+   260→            redeemedBy: {
+   261→              ...redeemedBy,
+   262→              [user.uid]: {
+   263→                uid: user.uid,
+   264→                name: user.displayName || user.email || t("credit.user"),
+   265→                redeemedAt: Date.now(),
+   266→              },
+   267→            },
+   268→          };
+   269→        });
+   270→
+   271→        if (!transactionResult.committed) {
+   272→          await runTransaction(amountRef, (cur) => {
+   273→            const bal = (cur || 0) as number;
+   274→            return Math.max(bal - actualAmount, 0);
+   275→          });
+   276→          toast.error(t("credit.sharedCodeFailed"));
+   277→          setIsRedeeming(false);
+   278→          return;
+   279→        }
+   280→
+   281→        // Update lookup currentRedemptions
+   282→        try {
+   283→          await update(ref(db, `sharedRedeemCodeLookup/${enteredCode}`), {
+   284→            currentRedemptions: (sharedLookupData.currentRedemptions || 0) + 1,
+   285→          });
+   286→        } catch { /* non-critical */ }
+   287→
+   288→        await update(ref(db, `credit/${user.uid}`), { updatedAt: Date.now() });
+   289→
+   290→        const histRef = push(ref(db, `credit/${user.uid}/history`));
+   291→        await set(histRef, {
+   292→          type: "redeem",
+   293→          amount: actualAmount,
+   294→          description: `${t("credit.sharedCodeCharge")} (${enteredCode})`,
+   295→          date: Date.now(),
+   296→        });
+   297→
+   298→        const notifRef = push(ref(db, `notifications/${user.uid}`));
+   299→        await set(notifRef, {
+   300→          type: "deposit_approved",
+   301→          title: t("credit.sharedCodeCharge"),
+   302→          message: `${t("credit.sharedCodeChargeMsg")} ${actualAmount.toLocaleString()} ${t("credit.riyalShort")} ${t("credit.viaSharedCode")}`,
+   303→          isRead: false,
+   304→          createdAt: Date.now(),
+   305→        });
+   306→
+   307→        toast.success(`${t("credit.chargedAmountSuccess")} ${actualAmount.toLocaleString()} ${t("credit.chargedSuccessFull")}`);
+   308→        setRedeemSuccess({ amount: actualAmount, visible: true });
+   309→        setRedeemCode("");
+   310→        setShowRedeem(false);
+   311→        setIsRedeeming(false);
+   312→        setTimeout(() => setRedeemSuccess(null), 3000);
+   313→        return;
+   314→      }
+   315→
+   316→      // 2) Check regular redeem code lookup
+   317→      let foundCodeId: string | null = null;
+   318→      let codeAmount = 0;
+   319→
+   320→      const lookupSnap = await get(ref(db, `redeemCodeLookup/${enteredCode}`));
+   321→      const lookupData = lookupSnap.val() as { pushId: string; amount: number; isUsed: boolean } | null;
+   322→      console.log("[Redeem] Lookup result:", lookupData);
+   323→
+   324→      if (lookupData) {
+   325→        if (lookupData.isUsed === true) {
+   326→          toast.error(t("credit.codeUsedAlready"));
+   327→          setIsRedeeming(false);
+   328→          return;
+   329→        }
+   330→        foundCodeId = lookupData.pushId;
+   331→        codeAmount = lookupData.amount || 0;
+   332→      } else {
+   333→        // 3) Lookup not found - search directly in redeemCodes
+   334→        console.log("[Redeem] Lookup not found, searching redeemCodes directly...");
+   335→        const codesSnap = await get(ref(db, "redeemCodes"));
+   336→        if (codesSnap.exists()) {
+   337→          const allCodes = codesSnap.val() as Record<string, { code: string; amount: number; isUsed: boolean }>;
+   338→          for (const [id, val] of Object.entries(allCodes)) {
+   339→            const normalizedStoredCode = normalizeCode(val.code || "");
+   340→            if (normalizedStoredCode === enteredCode) {
+   341→              if (val.isUsed === true) {
+   342→                toast.error(t("credit.codeUsedAlready"));
+   343→                setIsRedeeming(false);
+   344→                return;
+   345→              }
+   346→              foundCodeId = id;
+   347→              codeAmount = val.amount || 0;
+   348→              break;
+   349→            }
+   350→          }
+   351→        }
+   352→        if (!foundCodeId) {
+   353→          toast.error(t("credit.codeNotFound"));
+   354→          setIsRedeeming(false);
+   355→          return;
+   356→        }
+   357→      }
+   358→
+   359→      if (codeAmount <= 0) {
+   360→        toast.error(t("credit.codeInvalid"));
+   361→        setIsRedeeming(false);
+   362→        return;
+   363→      }
+   364→
+   365→      // 4) Charge credit using runTransaction
+   366→      const amountRef = ref(db, `credit/${user.uid}/amount`);
+   367→      const chargeResult = await runTransaction(amountRef, (currentAmount) => {
+   368→        const bal = (currentAmount || 0) as number;
+   369→        if (maxBalance > 0 && bal + codeAmount > maxBalance) {
+   370→          return; // abort transaction
+   371→        }
+   372→        return bal + codeAmount;
+   373→      });
+   374→
+   375→      if (!chargeResult.committed) {
+   376→        toast.error(`${t("credit.balanceCeiling")} ${maxBalance.toLocaleString()} ${t("credit.riyalShort")} ${t("credit.balanceCeilingPreventsAdd")}`);
+   377→        setIsRedeeming(false);
+   378→        return;
+   379→      }
+   380→
+   381→      await update(ref(db, `credit/${user.uid}`), { updatedAt: Date.now() });
+   382→      const finalAmount = chargeResult.snapshot.val();
+   383→      console.log("[Redeem] Credit updated successfully, new amount:", finalAmount);
+   384→
+   385→      // 5) Mark code as used in lookup (non-critical if fails)
+   386→      try {
+   387→        await update(ref(db, `redeemCodeLookup/${enteredCode}`), {
+   388→          isUsed: true,
+   389→          usedBy: user.uid,
+   390→          usedAt: Date.now(),
+   391→        });
+   392→      } catch { /* lookup may not exist for older codes */ }
+   393→
+   394→      // 6) Mark code as used in codes table
+   395→      await update(ref(db, `redeemCodes/${foundCodeId}`), {
+   396→        isUsed: true,
+   397→        usedBy: user.uid,
+   398→        usedByName: user.displayName || user.email || t("credit.user"),
+   399→        usedAt: Date.now(),
+   400→      });
+   401→
+   402→      // 6b) Delete the code from database after successful redemption
+   403→      try {
+   404→        await remove(ref(db, `redeemCodes/${foundCodeId}`));
+   405→        if (enteredCode) {
+   406→          await remove(ref(db, `redeemCodeLookup/${enteredCode}`));
+   407→        }
+   408→      } catch { /* non-critical - code already processed */ }
+   409→
+   410→      // 7) Add to history
+   411→      const histRef = push(ref(db, `credit/${user.uid}/history`));
+   412→      await set(histRef, {
+   413→        type: "redeem",
+   414→        amount: codeAmount,
+   415→        description: `${t("credit.codeCharge")} (${enteredCode})`,
+   416→        date: Date.now(),
+   417→      });
+   418→
+   419→      // 8) Send notification
+   420→      const notifRef = push(ref(db, `notifications/${user.uid}`));
+   421→      await set(notifRef, {
+   422→        type: "deposit_approved",
+   423→        title: t("credit.codeCharge"),
+   424→        message: `${t("credit.codeChargeMsg")} ${codeAmount.toLocaleString()} ${t("credit.riyalShort")} ${t("credit.viaChargeCode")}`,
+   425→        isRead: false,
+   426→        createdAt: Date.now(),
+   427→      });
+   428→
+   429→      toast.success(`${t("credit.chargedAmountSuccess")} ${codeAmount.toLocaleString()} ${t("credit.chargedSuccessFull")}`);
+   430→      setRedeemSuccess({ amount: codeAmount, visible: true });
+   431→      setRedeemCode("");
+   432→      setShowRedeem(false);
+   433→      setTimeout(() => setRedeemSuccess(null), 3000);
+   434→    } catch (error: unknown) {
+   435→      console.error("[Redeem] Error:", error);
+   436→      const msg = error instanceof Error ? error.message : t("credit.redeemError");
+   437→      toast.error(msg.includes("permission") ? t("credit.noPermission") : t("credit.redeemErrorRetry"));
+   438→    }
+   439→    setIsRedeeming(false);
+   440→  };
+   441→
+   442→  const handleSubscribe = async (plan: SubscriptionPlan & { id: string }) => {
+   443→    if (!user) return;
+   444→    setIsSubscribing(true);
+   445→    try {
+   446→      // Use runTransaction on amount field only to avoid race conditions
+   447→      const amountRef = ref(db, `credit/${user.uid}/amount`);
+   448→      const result = await runTransaction(amountRef, (currentAmount) => {
+   449→        const bal = (currentAmount || 0) as number;
+   450→        if (bal < plan.price) return; // abort - insufficient balance
+   451→        return bal - plan.price;
+   452→      });
+   453→
+   454→      if (!result.committed) {
+   455→        toast.error(`${t("credit.insufficientBalanceNeed")} ${plan.price.toLocaleString()} ${t("credit.riyalShort")}`);
+   456→        setIsSubscribing(false);
+   457→        return;
+   458→      }
+   459→
+   460→      // Update updatedAt separately
+   461→      await update(ref(db, `credit/${user.uid}`), { updatedAt: Date.now() });
+   462→
+   463→      const histRef = push(ref(db, `credit/${user.uid}/history`));
+   464→      await set(histRef, { type: "purchase", amount: plan.price, description: `${t("credit.subscribePlanDesc")} ${plan.name}`, date: Date.now() });
+   465→      await set(ref(db, `userSubscriptions/${user.uid}`), {
+   466→        planId: plan.id,
+   467→        planName: plan.name,
+   468→        activatedAt: Date.now(),
+   469→        expiresAt: Date.now() + plan.durationDays * 86400000,
+   470→        isActive: true,
+   471→        autoRenew: true,
+   472→        uid: user.uid,
+   473→      });
+   474→      const notifRef = push(ref(db, `notifications/${user.uid}`));
+   475→      await set(notifRef, {
+   476→        type: "subscription",
+   477→        title: t("credit.newSubscription"),
+   478→        message: `${t("credit.planActivated")} ${plan.name} ${t("credit.forDuration")} ${plan.durationDays} ${t("credit.day")}`,
+   479→        isRead: false,
+   480→        createdAt: Date.now(),
+   481→      });
+   482→      toast.success(`${t("credit.subscribeSuccessMsg")} ${plan.name} ${t("credit.successEmoji")}`);
+   483→    } catch {
+   484→      toast.error(t("credit.subscriptionError"));
+   485→    }
+   486→    setIsSubscribing(false);
+   487→  };
+   488→
+   489→  const toggleAutoRenew = async () => {
+   490→    if (!user || !mySubscription) return;
+   491→    try {
+   492→      await update(ref(db, `userSubscriptions/${user.uid}`), { autoRenew: !mySubscription.autoRenew });
+   493→      toast.success(mySubscription.autoRenew ? t("credit.autoRenewDisabled") : t("credit.autoRenewEnabled"));
+   494→    } catch {
+   495→      toast.error(t("credit.errorOccurred"));
+   496→    }
+   497→  };
+   498→
+   499→  if (!user) {
+   500→    return (
+   501→      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="px-4 pt-16 text-center">
+   502→        <div className="bg-[#E8F5E9] rounded-2xl p-8">
+   503→          <Wallet className="w-16 h-16 mx-auto text-[#1B7A3D]/30 mb-4" />
+   504→          <h2 className="text-xl font-bold text-gray-900 mb-2">{t("credit.loginFirst")}</h2>
+   505→          <p className="text-gray-500 text-sm mb-4">{t("credit.mustLogin")}</p>
+   506→          <Button onClick={onAuthClick} className="bg-gradient-to-l from-[#1B7A3D] to-[#22A24D] text-white font-bold rounded-xl"><LogIn className="w-4 h-4 ml-2" />{t("auth.login")}</Button>
+   507→        </div>
+   508→      </motion.div>
+   509→    );
+   510→  }
+   511→
+   512→  return (
+   513→    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ type: "spring", stiffness: 120, damping: 14 }} className="px-4 pt-4 pb-4">
+   514→
+   515→      {/* ===== Large Balance Card ===== */}
+   516→      <motion.div
+   517→        initial={{ scale: 0.95, opacity: 0 }}
+   518→        animate={{ scale: 1, opacity: 1 }}
+   519→        transition={{ type: "spring", stiffness: 200, damping: 18 }}
+   520→        className="relative overflow-hidden rounded-3xl mb-5"
+   521→      >
+   522→        {/* Main gradient card */}
+   523→        <div className="bg-gradient-to-bl from-[#1B7A3D] via-[#1f8e46] to-[#22A24D] rounded-3xl p-6 relative overflow-hidden backdrop-blur-xl" style={{ background: "linear-gradient(to bottom left, rgba(27,122,61,0.85), rgba(34,162,77,0.9)), rgba(255,255,255,0.08)", boxShadow: "0 8px 32px rgba(27,122,61,0.3), inset 0 1px 0 rgba(255,255,255,0.1)" }}>
+   524→          {/* Decorative elements */}
+   525→          <div className="absolute top-0 left-0 w-40 h-40 bg-white/10 rounded-full -translate-x-1/2 -translate-y-1/2 backdrop-blur-sm" />
+   526→          <div className="absolute bottom-0 right-0 w-32 h-32 bg-white/10 rounded-full translate-x-1/3 translate-y-1/3 backdrop-blur-sm" />
+   527→          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 bg-white/[0.05] rounded-full backdrop-blur-sm" />
+   528→
+   529→          {/* Wallet icon */}
+   530→          <div className="flex items-center justify-center gap-2 mb-3 relative z-10">
+   531→            <Wallet className="w-5 h-5 text-white/70" />
+   532→            <p className="text-white/70 text-sm font-bold">{t("credit.currentBalance")}</p>
+   533→          </div>
+   534→
+   535→          {/* Balance amount */}
+   536→          <motion.div
+   537→            key={balance}
+   538→            initial={{ scale: 0.8, opacity: 0 }}
+   539→            animate={{ scale: 1, opacity: 1 }}
+   540→            transition={{ type: "spring", stiffness: 300, damping: 20 }}
+   541→            className="relative z-10 text-center mb-2"
+   542→          >
+   543→            <p className="text-5xl font-black text-white tracking-tight">{balance.toLocaleString()}</p>
+   544→          </motion.div>
+   545→          <p className="text-white/50 text-sm text-center relative z-10 mb-3">{t("credit.yemeniRial")}</p>
+   546→
+   547→          {/* Max balance info */}
+   548→          {maxBalance > 0 && (
+   549→            <div className="relative z-10">
+   550→              <div className="bg-white/10 rounded-xl px-3 py-1.5">
+   551→                <div className="flex items-center justify-between text-white/40 text-[10px]">
+   552→                  <span>{t("credit.maxBalance")}</span>
+   553→                  <span>{maxBalance.toLocaleString()} {t("credit.riyalShort")}</span>
+   554→                </div>
+   555→                {/* Progress bar */}
+   556→                <div className="mt-1.5 h-1 bg-white/10 rounded-full overflow-hidden">
+   557→                  <div
+   558→                    className="h-full bg-white/40 rounded-full transition-all duration-700"
+   559→                    style={{ width: `${Math.min((balance / maxBalance) * 100, 100)}%` }}
+   560→                  />
+   561→                </div>
+   562→              </div>
+   563→            </div>
+   564→          )}
+   565→        </div>
+   566→      </motion.div>
+   567→
+   568→      {/* ===== Quick Actions ===== */}
+   569→      <div className="grid grid-cols-2 gap-3 mb-5">
+   570→        {/* Deposit button */}
+   571→        <motion.button
+   572→          whileTap={{ scale: 0.97 }}
+   573→          onClick={() => onNavigate?.("deposit")}
+   574→          className="bg-white rounded-2xl card-shadow p-4 flex flex-col items-center gap-2 border-2 border-[#1B7A3D]/10 hover:border-[#1B7A3D]/30 transition-all"
+   575→        >
+   576→          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-[#1B7A3D] to-[#22A24D] flex items-center justify-center">
+   577→            <Plus className="w-6 h-6 text-white" />
+   578→          </div>
+   579→          <span className="text-xs font-black text-gray-900">{t("credit.deposit")}</span>
+   580→          <span className="text-[9px] text-gray-400">{t("credit.transferToAdmin")}</span>
+   581→        </motion.button>
+   582→
+   583→        {/* Redeem code button */}
+   584→        <motion.button
+   585→          whileTap={{ scale: 0.97 }}
+   586→          onClick={() => setShowRedeem(!showRedeem)}
+   587→          className={`bg-white rounded-2xl card-shadow p-4 flex flex-col items-center gap-2 border-2 transition-all ${showRedeem ? 'border-sky-300 ring-2 ring-sky-100' : 'border-sky-100 hover:border-sky-300'}`}
+   588→        >
+   589→          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-sky-500 to-sky-600 flex items-center justify-center">
+   590→            <Ticket className="w-6 h-6 text-white" />
+   591→          </div>
+   592→          <span className="text-xs font-black text-gray-900">{t("credit.redeemCode")}</span>
+   593→          <span className="text-[9px] text-gray-400">{showRedeem ? t("credit.hideCodeField") : t("credit.enterChargeCode")}</span>
+   594→        </motion.button>
+   595→      </div>
+   596→
+   597→      {/* Redeem Code Input */}
+   598→      <AnimatePresence>
+   599→        {showRedeem && (
+   600→          <motion.div
+   601→            ref={redeemSectionRef}
+   602→            initial={{ opacity: 0, height: 0 }}
+   603→            animate={{ opacity: 1, height: "auto" }}
+   604→            exit={{ opacity: 0, height: 0 }}
+   605→            transition={{ type: "spring", stiffness: 300, damping: 25 }}
+   606→            className="overflow-hidden mb-4"
+   607→          >
+   608→            <div className="bg-white rounded-2xl card-shadow p-4 space-y-3 border-2 border-sky-200">
+   609→              <div className="flex items-center justify-between">
+   610→                <h3 className="text-sky-600 font-bold text-sm flex items-center gap-2"><Ticket className="w-4 h-4" />{t("credit.redeemCodeTitle")}</h3>
+   611→                <button onClick={() => setShowRedeem(false)} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+   612→              </div>
+   613→              <div className="relative">
+   614→                <Input
+   615→                  value={redeemCode}
+   616→                  onChange={(e) => setRedeemCode(normalizeCode(e.target.value))}
+   617→                  className="bg-gray-50 border-gray-200 text-gray-900 rounded-xl h-12 text-center text-lg font-black tracking-widest"
+   618→                  placeholder="APXXXXXXXX"
+   619→                  dir="ltr"
+   620→                  maxLength={10}
+   621→                />
+   622→              </div>
+   623→              <Button
+   624→                onClick={handleRedeemCode}
+   625→                disabled={!redeemCode.trim() || isRedeeming}
+   626→                className="w-full bg-gradient-to-l from-sky-500 to-sky-600 text-white font-bold rounded-xl h-12 text-base hover:from-sky-600 hover:to-sky-700"
+   627→              >
+   628→                {isRedeeming ? (
+   629→                  <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }} className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full" />
+   630→                ) : (
+   631→                  <><Check className="w-5 h-5 ml-2" />{t("credit.redeemBtn")}</>
+   632→                )}
+   633→              </Button>
+   634→              <p className="text-[10px] text-gray-400 text-center">{t("credit.redeemDesc")}</p>
+   635→            </div>
+   636→          </motion.div>
+   637→        )}
+   638→      </AnimatePresence>
+   639→
+   640→      {/* District Filter */}
+   641→      <div className="mb-4">
+   642→        <motion.button
+   643→          whileTap={{ scale: 0.97 }}
+   644→          onClick={() => setShowDistricts(!showDistricts)}
+   645→          className="w-full bg-white rounded-2xl card-shadow p-3 flex items-center justify-between border-2 border-[#1B7A3D]/20 hover:border-[#1B7A3D]/50 transition-all"
+   646→        >
+   647→          <div className="flex items-center gap-2">
+   648→            <div className="w-9 h-9 rounded-xl bg-[#E8F5E9] flex items-center justify-center"><MapPin className="w-4 h-4 text-[#1B7A3D]" /></div>
+   649→            <div className="text-right">
+   650→              <p className="text-xs font-bold text-gray-900">{t("credit.districtFilter")}</p>
+   651→              <p className="text-[10px] text-gray-400">{districtFilter === "all" ? t("credit.allDistricts") : districtFilter}</p>
+   652→            </div>
+   653→          </div>
+   654→          <Filter className="w-4 h-4 text-[#1B7A3D]" />
+   655→        </motion.button>
+   656→        <AnimatePresence>
+   657→          {showDistricts && (
+   658→            <motion.div
+   659→              initial={{ opacity: 0, height: 0 }}
+   660→              animate={{ opacity: 1, height: "auto" }}
+   661→              exit={{ opacity: 0, height: 0 }}
+   662→              transition={{ type: "spring", stiffness: 300, damping: 25 }}
+   663→              className="overflow-hidden"
+   664→            >
+   665→              <div className="mt-2 flex flex-wrap gap-2">
+   666→                <button
+   667→                  onClick={() => { setDistrictFilter("all"); setShowDistricts(false); }}
+   668→                  className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${districtFilter === "all" ? "bg-[#1B7A3D] text-white shadow-md" : "bg-white text-gray-600 card-shadow"}`}
+   669→                >
+   670→                  {t("credit.all")}
+   671→                </button>
+   672→                {fbDistricts.map(d => (
+   673→                  <button
+   674→                    key={d}
+   675→                    onClick={() => { setDistrictFilter(d); setShowDistricts(false); }}
+   676→                    className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${districtFilter === d ? "bg-[#1B7A3D] text-white shadow-md" : "bg-white text-gray-600 card-shadow"}`}
+   677→                  >
+   678→                    {d}
+   679→                  </button>
+   680→                ))}
+   681→              </div>
+   682→            </motion.div>
+   683→          )}
+   684→        </AnimatePresence>
+   685→      </div>
+   686→
+   687→      {/* Networks by District */}
+   688→      {fbNetworks.length > 0 && (
+   689→        <div className="mb-4">
+   690→          <div className="flex items-center justify-between mb-2">
+   691→            <h3 className="text-sm font-black text-gray-900 flex items-center gap-1.5"><Wifi className="w-4 h-4 text-[#1B7A3D]" />{t("credit.availableNetworks")}</h3>
+   692→            <Badge className="bg-[#E8F5E9] text-[#1B7A3D] text-[9px]">
+   693→              {districtFilter === "all" ? fbNetworks.length : fbNetworks.filter(n => n.location === districtFilter).length} {t("credit.networkCount")}
+   694→            </Badge>
+   695→          </div>
+   696→          <div className="space-y-2">
+   697→            {fbNetworks
+   698→              .filter(n => districtFilter === "all" || n.location === districtFilter)
+   699→              .map(net => {
+   700→                const availableCount = allCards.filter(c => c.network === net.id && !c.isUsed).length;
+   701→                return (
+   702→                  <div key={net.id} className="bg-white rounded-xl card-shadow p-3">
+   703→                    <div className="flex items-center justify-between">
+   704→                      <div className="flex items-center gap-2.5">
+   705→                        <div className="w-9 h-9 rounded-lg flex items-center justify-center text-base overflow-hidden" style={{ backgroundColor: net.bgColor || (net.color + "1A") }}>
+   706→                          {(net as Record<string, unknown>).imageBase64 ? (
+   707→                            <img src={(net as Record<string, unknown>).imageBase64 as string} alt={net.name} className="w-8 h-8 rounded-lg object-cover" />
+   708→                          ) : (
+   709→                            <span>{net.emoji}</span>
+   710→                          )}
+   711→                        </div>
+   712→                        <div>
+   713→                          <p className="text-xs font-bold" style={{ color: net.color }}>{net.name}</p>
+   714→                          <div className="flex items-center gap-2 mt-0.5">
+   715→                            {net.location && (
+   716→                              <span className="text-[10px] text-gray-400 flex items-center gap-0.5"><MapPin className="w-2.5 h-2.5" />{net.location}</span>
+   717→                            )}
+   718→                            {net.ownerPhone && (
+   719→                              <a href={`https://wa.me/${net.ownerPhone}`} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-500 flex items-center gap-0.5 hover:underline">
+   720→                                <Phone className="w-2.5 h-2.5" />{t("credit.contact")}
+   721→                              </a>
+   722→                            )}
+   723→                          </div>
+   724→                        </div>
+   725→                      </div>
+   726→                      <Badge className="bg-[#E8F5E9] text-[#1B7A3D] text-[9px]">{availableCount} {t("credit.cardCount")}</Badge>
+   727→                    </div>
+   728→                  </div>
+   729→                );
+   730→              })}
+   731→            {fbNetworks.filter(n => districtFilter === "all" || n.location === districtFilter).length === 0 && (
+   732→              <div className="bg-white rounded-xl card-shadow p-4 text-center">
+   733→                <Wifi className="w-8 h-8 mx-auto text-gray-200 mb-1" />
+   734→                <p className="text-gray-400 text-xs">{t("credit.noNetworks")}</p>
+   735→              </div>
+   736→            )}
+   737→          </div>
+   738→        </div>
+   739→      )}
+   740→
+   741→      {/* Active Subscription Card */}
+   742→      {mySubscription && (
+   743→        <div className="bg-gradient-to-bl from-amber-400 to-orange-500 rounded-2xl p-4 mb-4 card-shadow-lg text-white">
+   744→          <div className="flex items-center justify-between mb-2">
+   745→            <div className="flex items-center gap-2"><Crown className="w-5 h-5" /><span className="font-bold text-sm">{mySubscription.planName}</span></div>
+   746→            <Badge className="bg-white/20 text-white border-0 text-[10px]">{t("credit.active")}</Badge>
+   747→          </div>
+   748→          <div className="flex items-center gap-2 text-white/80 text-xs mb-2">
+   749→            <Clock className="w-3 h-3" />
+   750→            <span>{t("credit.expires")}: {mySubscription.expiresAt ? formatDate(mySubscription.expiresAt) : ""}</span>
+   751→          </div>
+   752→          <div className="flex items-center justify-between">
+   753→            <button onClick={toggleAutoRenew} className="text-[10px] text-white/70 hover:text-white transition-colors">
+   754→              {mySubscription.autoRenew ? `🔄 ${t("credit.autoRenewOn")}` : `⏸ ${t("credit.autoRenewOff")}`}
+   755→            </button>
+   756→          </div>
+   757→        </div>
+   758→      )}
+   759→
+   760→      {/* Subscription Plans */}
+   761→      {activePlans.length > 0 && (
+   762→        <div className="mb-4">
+   763→          <motion.button
+   764→            whileTap={{ scale: 0.97 }}
+   765→            onClick={() => setShowPlans(!showPlans)}
+   766→            className="w-full bg-white rounded-2xl card-shadow p-4 flex items-center gap-3 border-2 border-amber-200 hover:border-amber-400 transition-all"
+   767→          >
+   768→            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center flex-shrink-0">
+   769→              <Crown className="w-6 h-6 text-white" />
+   770→            </div>
+   771→            <div className="flex-1 text-right">
+   772→              <p className="text-sm font-black text-gray-900">{t("credit.subscriptionPlans")}</p>
+   773→              <p className="text-[10px] text-gray-400">{activePlans.length} {t("credit.availablePlans")}</p>
+   774→            </div>
+   775→            <Star className="w-5 h-5 text-amber-500" />
+   776→          </motion.button>
+   777→
+   778→          <AnimatePresence>
+   779→            {showPlans && (
+   780→              <motion.div
+   781→                initial={{ opacity: 0, height: 0 }}
+   782→                animate={{ opacity: 1, height: "auto" }}
+   783→                exit={{ opacity: 0, height: 0 }}
+   784→                transition={{ type: "spring", stiffness: 300, damping: 25 }}
+   785→                className="overflow-hidden"
+   786→              >
+   787→                <div className="space-y-3 mt-3">
+   788→                  {activePlans.map(plan => (
+   789→                    <div key={plan.id} className="bg-white rounded-2xl card-shadow p-4 border border-amber-100">
+   790→                      <div className="flex items-center justify-between mb-2">
+   791→                        <div>
+   792→                          <p className="text-sm font-black text-gray-900 flex items-center gap-1"><Crown className="w-4 h-4 text-amber-500" />{plan.name}</p>
+   793→                          {plan.description && <p className="text-[10px] text-gray-400 mt-0.5">{plan.description}</p>}
+   794→                        </div>
+   795→                        <p className="text-lg font-black text-[#1B7A3D]">{plan.price.toLocaleString()} <span className="text-[10px] text-gray-400">{t("credit.riyalShort")}</span></p>
+   796→                      </div>
+   797→                      <div className="flex items-center justify-between">
+   798→                        <span className="text-[10px] text-gray-400">{t("credit.durationLabel")}: {plan.durationDays} {t("credit.day")}</span>
+   799→                        <Button
+   800→                          onClick={() => handleSubscribe(plan)}
+   801→                          disabled={balance < plan.price || isSubscribing || !!mySubscription}
+   802→                          className="bg-gradient-to-l from-amber-400 to-orange-500 text-white font-bold rounded-xl h-8 text-xs px-4"
+   803→                        >
+   804→                          {mySubscription ? t("credit.alreadySubscribed") : balance < plan.price ? t("credit.insufficientBalance") : t("credit.subscribe")}
+   805→                        </Button>
+   806→                      </div>
+   807→                    </div>
+   808→                  ))}
+   809→                </div>
+   810→              </motion.div>
+   811→            )}
+   812→          </AnimatePresence>
+   813→        </div>
+   814→      )}
+   815→
+   816→      {/* Info card */}
+   817→      <div className="bg-white rounded-2xl card-shadow mb-5 p-4">
+   818→        <div className="flex items-start gap-3">
+   819→          <div className="w-10 h-10 rounded-xl bg-[#E8F5E9] flex items-center justify-center flex-shrink-0"><Shield className="w-5 h-5 text-[#1B7A3D]" /></div>
+   820→          <div>
+   821→            <h3 className="text-[#1B7A3D] font-bold mb-1">{t("credit.howToCharge")}</h3>
+   822→            <p className="text-sm text-gray-500 leading-relaxed">{t("credit.howToChargeDesc")}</p>
+   823→          </div>
+   824→        </div>
+   825→      </div>
+   826→
+   827→      {/* ===== Transaction History Timeline ===== */}
+   828→      <div className="mb-2">
+   829→        <button
+   830→          onClick={() => setShowHistory(!showHistory)}
+   831→          className="w-full flex items-center justify-between mb-3"
+   832→        >
+   833→          <h3 className="text-lg font-black text-gray-900 flex items-center gap-2">
+   834→            <Receipt className="w-5 h-5 text-[#1B7A3D]" />{t("credit.transactionHistory")}
+   835→          </h3>
+   836→          <div className="flex items-center gap-2">
+   837→            {history.length > 0 && (
+   838→              <Badge className="bg-[#E8F5E9] text-[#1B7A3D] text-[9px]">{history.length}</Badge>
+   839→            )}
+   840→            <motion.div animate={{ rotate: showHistory ? 180 : 0 }} transition={{ duration: 0.2 }}>
+   841→              <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+   842→            </motion.div>
+   843→          </div>
+   844→        </button>
+   845→
+   846→        <AnimatePresence>
+   847→          {showHistory && (
+   848→            <motion.div
+   849→              initial={{ opacity: 0, height: 0 }}
+   850→              animate={{ opacity: 1, height: "auto" }}
+   851→              exit={{ opacity: 0, height: 0 }}
+   852→              transition={{ type: "spring", stiffness: 300, damping: 25 }}
+   853→              className="overflow-hidden"
+   854→            >
+   855→              {history.length === 0 ? (
+   856→                <div className="bg-white rounded-2xl card-shadow p-8 text-center">
+   857→                  <Receipt className="w-12 h-12 mx-auto text-gray-200 mb-2" />
+   858→                  <p className="text-gray-400 text-sm">{t("credit.noTransactions")}</p>
+   859→                </div>
+   860→              ) : (
+   861→                <div className="relative max-h-96 overflow-y-auto custom-scrollbar space-y-2">
+   862→                  {/* Timeline line */}
+   863→                  {history.map((item, i) => {
+   864→                    const config = getTypeConfig(item.type);
+   865→                    const IconComp = config.icon;
+   866→                    const isPositive = ["deposit", "gift", "redeem", "commission", "refund"].includes(item.type);
+   867→
+   868→                    return (
+   869→                      <motion.div
+   870→                        key={item.id}
+   871→                        initial={{ opacity: 0, x: 20 }}
+   872→                        animate={{ opacity: 1, x: 0 }}
+   873→                        transition={{ delay: i * 0.03 }}
+   874→                        className="bg-white rounded-xl card-shadow p-3 relative"
+   875→                      >
+   876→                        <div className="flex items-center justify-between">
+   877→                          <div className="flex items-center gap-2.5">
+   878→                            {/* Type icon */}
+   879→                            <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${config.bg}`}>
+   880→                              <IconComp className={`w-4 h-4 ${config.iconColor}`} />
+   881→                            </div>
+   882→                            <div>
+   883→                              <p className="text-xs font-bold text-gray-900">{item.description}</p>
+   884→                              <div className="flex items-center gap-2 mt-0.5">
+   885→                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md ${config.bg} ${config.iconColor}`}>
+   886→                                  {t(config.labelKey)}
+   887→                                </span>
+   888→                                <span className="text-[10px] text-gray-400">{item.date ? formatDate(item.date) : ""}</span>
+   889→                              </div>
+   890→                            </div>
+   891→                          </div>
+   892→                          <span className={`font-black text-sm ${isPositive ? "text-[#1B7A3D]" : "text-red-500"}`}>
+   893→                            {config.sign}{item.amount.toLocaleString()} {t("credit.riyalShort")}
+   894→                          </span>
+   895→                        </div>
+   896→                      </motion.div>
+   897→                    );
+   898→                  })}
+   899→                </div>
+   900→              )}
+   901→            </motion.div>
+   902→          )}
+   903→        </AnimatePresence>
+   904→      </div>
+   905→      {/* ====== Redeem Success Animation ====== */}
+   906→      <AnimatePresence>
+   907→        {redeemSuccess && redeemSuccess.visible && (
+   908→          <motion.div
+   909→            initial={{ opacity: 0 }}
+   910→            animate={{ opacity: 1 }}
+   911→            exit={{ opacity: 0 }}
+   912→            className="fixed inset-0 bg-black/50 z-[10000] flex items-center justify-center"
+   913→            onClick={() => setRedeemSuccess(null)}
+   914→          >
+   915→            <motion.div
+   916→              initial={{ scale: 0.5, opacity: 0 }}
+   917→              animate={{ scale: 1, opacity: 1 }}
+   918→              exit={{ scale: 0.5, opacity: 0 }}
+   919→              transition={{ type: "spring", stiffness: 300, damping: 20 }}
+   920→              className="bg-white rounded-3xl p-8 mx-6 text-center shadow-2xl"
+   921→              onClick={(e) => e.stopPropagation()}
+   922→            >
+   923→              <motion.div
+   924→                initial={{ scale: 0 }}
+   925→                animate={{ scale: 1 }}
+   926→                transition={{ delay: 0.2, type: "spring", stiffness: 400, damping: 12 }}
+   927→                className="w-20 h-20 rounded-full bg-[#E8F5E9] flex items-center justify-center mx-auto mb-4"
+   928→              >
+   929→                <motion.div
+   930→                  initial={{ scale: 0 }}
+   931→                  animate={{ scale: 1 }}
+   932→                  transition={{ delay: 0.4, type: "spring", stiffness: 500, damping: 15 }}
+   933→                >
+   934→                  <Check className="w-10 h-10 text-[#1B7A3D]" />
+   935→                </motion.div>
+   936→              </motion.div>
+   937→              <motion.h3
+   938→                initial={{ opacity: 0, y: 10 }}
+   939→                animate={{ opacity: 1, y: 0 }}
+   940→                transition={{ delay: 0.3 }}
+   941→                className="text-lg font-black text-gray-900 mb-2"
+   942→              >
+   943→                {t("credit.chargedSuccessTitle")}
+   944→              </motion.h3>
+   945→              <motion.div
+   946→                initial={{ opacity: 0, y: 10 }}
+   947→                animate={{ opacity: 1, y: 0 }}
+   948→                transition={{ delay: 0.5 }}
+   949→              >
+   950→                <span className="text-4xl font-black text-[#1B7A3D]">
+   951→                  +{redeemSuccess.amount.toLocaleString()}
+   952→                </span>
+   953→                <p className="text-sm text-gray-400 mt-1">{t("credit.yemeniRial")}</p>
+   954→              </motion.div>
+   955→              <motion.div
+   956→                initial={{ opacity: 0, y: [0, -10, 0] }}
+   957→                animate={{ opacity: 1, y: [0, -8, 0] }}
+   958→                transition={{ delay: 0.7, duration: 0.5 }}
+   959→                className="mt-4"
+   960→              >
+   961→                <Sparkles className="w-6 h-6 text-amber-400 mx-auto" />
+   962→              </motion.div>
+   963→            </motion.div>
+   964→          </motion.div>
+   965→        )}
+   966→      </AnimatePresence>
+   967→    </motion.div>
+   968→  );
+   969→}
+   970→

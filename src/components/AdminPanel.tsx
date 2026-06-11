@@ -27,7 +27,8 @@ import {
   AppUser, CardItem, BankDetail, Advertisement, SimCard, DepositRequest,
   NetworkItem, TierItem, RedeemCode, SubscriptionPlan, UserSubscription,
   BulkNotification, StarlinkProduct, StarlinkOrder, SharedRedeemCode,
-  CommissionSetting, CommissionEntry, MonthlyPayout, CardSaleLocation
+  CommissionSetting, CommissionEntry, MonthlyPayout, CardSaleLocation,
+  TelecomProvider, TelecomNetwork, TelecomPackage
 } from "@/lib/types";
 import jsPDF from "jspdf";
 import { useLanguage } from "@/context/LanguageContext";
@@ -58,6 +59,9 @@ const ADMIN_TAB_IDS = [
   { id: "tiers", icon: Star, labelKey: "admin2.tiers" },
   { id: "starlink", icon: Satellite, labelKey: "" },
   { id: "banks", icon: Building2, labelKey: "admin2.banks" },
+  { id: "telecomProviders", icon: Globe, labelKey: "admin2.telecomProviders" },
+  { id: "telecomNetworks", icon: Smartphone, labelKey: "admin2.telecomNetworks" },
+  { id: "telecomPackages", icon: Package, labelKey: "admin2.telecomPackages" },
   { id: "sims", icon: SimIcon, labelKey: "admin2.sims" },
   { id: "ads", icon: Megaphone, labelKey: "admin2.ads" },
   { id: "homeBanners", icon: ImageIcon, labelKey: "admin2.homeBanners" },
@@ -114,6 +118,11 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
   const [userBalances, setUserBalances] = useState<Record<string, number>>({});
   const [userHistories, setUserHistories] = useState<Record<string, { type: string; amount: number; description: string; date: number }[]>>({});
   const [hiddenSections, setHiddenSections] = useState<Record<string, boolean>>({});
+
+  // Telecom
+  const [telecomProviders, setTelecomProviders] = useState<Record<string, TelecomProvider>>({});
+  const [telecomNetworks, setTelecomNetworks] = useState<Record<string, TelecomNetwork>>({});
+  const [telecomPkgs, setTelecomPkgs] = useState<Record<string, Record<string, TelecomPackage>>>({});
 
   // ─── Settings ──────────────────────────────────────────────
   const [adminWhatsApp, setAdminWhatsApp] = useState(ADMIN_WHATSAPP);
@@ -208,6 +217,23 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
   const [newBankName, setNewBankName] = useState("");
   const [newBankAccount, setNewBankAccount] = useState("");
   const [newBankNumber, setNewBankNumber] = useState("");
+
+  // Telecom Provider forms
+  const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
+  const [providerForm, setProviderForm] = useState({ name: "", nameEn: "", apiUrl: "", apiKey: "", method: "POST" as "POST" | "GET", headers: "{}", bodyTemplate: "{}", successField: "", messageField: "", transactionIdField: "", balanceCheckUrl: "", isActive: true });
+  const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
+
+  // Telecom Network forms
+  const [editingNetworkId, setEditingNetworkId] = useState<string | null>(null);
+  const [networkForm, setNetworkForm] = useState({ name: "", nameEn: "", color: "#1B7A3D", bgColor: "#E8F5E9", icon: "📱", prefixes: "", isActive: true, providerId: "", subCategories: "" });
+  const [expandedNetwork, setExpandedNetwork] = useState<string | null>(null);
+
+  // Telecom Package forms
+  const [editingPkgId, setEditingPkgId] = useState<string | null>(null);
+  const [pkgForm, setPkgForm] = useState({ name: "", nameEn: "", price: "", wholesalePrice: "", description: "", descriptionEn: "", dataAmount: "", duration: "", durationUnit: "day", type: "recharge" as "recharge" | "internet" | "voice", isActive: true, subCategoryId: "", productCode: "", networkId: "" });
+  const [pkgFilterNetwork, setPkgFilterNetwork] = useState("all");
+  const [pkgFilterSubCat, setPkgFilterSubCat] = useState("all");
+  const [pkgFilterType, setPkgFilterType] = useState("all");
 
   // SIM forms
   const [newSimName, setNewSimName] = useState("");
@@ -368,6 +394,27 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
     const saleLocUnsub = onValue(ref(db, "cardSaleLocations"), (snap) => setSaleLocations(snap.val() || {}));
     unsubs.push(saleLocUnsub);
 
+    const provUnsub = onValue(ref(db, "telecomProviders"), (snap) => {
+      const data = snap.val();
+      if (data) setTelecomProviders(data as Record<string, TelecomProvider>);
+      else setTelecomProviders({});
+    });
+    unsubs.push(provUnsub);
+
+    const netTUnsub = onValue(ref(db, "telecomNetworks"), (snap) => {
+      const data = snap.val();
+      if (data) setTelecomNetworks(data as Record<string, TelecomNetwork>);
+      else setTelecomNetworks({});
+    });
+    unsubs.push(netTUnsub);
+
+    const pkgUnsub = onValue(ref(db, "telecomPackages"), (snap) => {
+      const data = snap.val();
+      if (data) setTelecomPkgs(data as Record<string, Record<string, TelecomPackage>>);
+      else setTelecomPkgs({});
+    });
+    unsubs.push(pkgUnsub);
+
     return () => unsubs.forEach(u => u());
   }, []);
 
@@ -377,6 +424,11 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
   const banksList = Object.entries(allBanks).map(([id, val]) => ({ id, ...val }));
   const adsList = Object.entries(allAds).map(([id, val]) => ({ id, ...val }));
   const simsList = Object.entries(allSims).map(([id, val]) => ({ id, ...val }));
+  const telecomProvidersList = Object.entries(telecomProviders).map(([id, val]) => ({ id, ...val }));
+  const telecomNetworksList = Object.entries(telecomNetworks).map(([id, val]) => ({ id, ...val }));
+  const telecomPkgsFlat = Object.entries(telecomPkgs).flatMap(([netId, pkgs]) =>
+    Object.entries(pkgs || {}).map(([pkgId, val]) => ({ id: pkgId, networkId: netId, ...val }))
+  );
   const depositsList = Object.entries(allDeposits).map(([id, val]) => ({ id, ...val })).sort((a: DepositRequest, b: DepositRequest) => (b.createdAt || 0) - (a.createdAt || 0));
   const pendingDeposits = depositsList.filter(d => d.status === "pending");
   const redeemCodesList = Object.entries(allRedeemCodes).map(([id, val]) => ({ id, ...val })).sort((a: RedeemCode, b: RedeemCode) => (b.createdAt || 0) - (a.createdAt || 0));
@@ -825,6 +877,167 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
       try { await remove(ref(db, `bankDetails/${id}`)); toast.success(t("admin2.deletedBank")); setDeleteConfirm(null); }
       catch { toast.error(t("admin2.error")); }
     } else { setDeleteConfirm(`bank-${id}`); setTimeout(() => setDeleteConfirm(null), 3000); }
+  };
+
+  // ─── Telecom Provider CRUD ───────────────────────────────────
+  const saveProvider = async () => {
+    if (!providerForm.name || !providerForm.apiUrl) { toast.error(t("admin2.fillAllFields")); return; }
+    try {
+      let headers: Record<string, string> = {};
+      let bodyTemplate: string = "{}";
+      try { headers = JSON.parse(providerForm.headers || "{}"); } catch { toast.error("Headers JSON غير صالح"); return; }
+      try { bodyTemplate = providerForm.bodyTemplate; JSON.parse(bodyTemplate); } catch { toast.error("Body Template JSON غير صالح"); return; }
+      const data = {
+        name: providerForm.name.trim(), nameEn: providerForm.nameEn.trim(),
+        apiUrl: providerForm.apiUrl.trim(), apiKey: providerForm.apiKey.trim(),
+        method: providerForm.method, headers, bodyTemplate,
+        responseMapping: { successField: providerForm.successField.trim(), messageField: providerForm.messageField.trim(), transactionIdField: providerForm.transactionIdField.trim() },
+        balanceCheckUrl: providerForm.balanceCheckUrl.trim(), isActive: providerForm.isActive,
+        createdAt: Date.now(),
+      };
+      if (editingProviderId) {
+        await update(ref(db, `telecomProviders/${editingProviderId}`), data);
+        toast.success(t("admin2.updated"));
+      } else {
+        const provRef = push(ref(db, "telecomProviders"));
+        await set(provRef, { ...data, id: provRef.key });
+        toast.success(t("admin2.added"));
+      }
+      setEditingProviderId(null);
+      setProviderForm({ name: "", nameEn: "", apiUrl: "", apiKey: "", method: "POST", headers: "{}", bodyTemplate: "{}", successField: "", messageField: "", transactionIdField: "", balanceCheckUrl: "", isActive: true });
+    } catch { toast.error(t("admin2.error")); }
+  };
+
+  const deleteProvider = async (id: string) => {
+    if (deleteConfirm === `tprov-${id}`) {
+      try { await remove(ref(db, `telecomProviders/${id}`)); toast.success(t("admin2.deleted")); setDeleteConfirm(null); }
+      catch { toast.error(t("admin2.error")); }
+    } else { setDeleteConfirm(`tprov-${id}`); setTimeout(() => setDeleteConfirm(null), 3000); }
+  };
+
+  const toggleProviderActive = async (id: string, current: boolean) => {
+    try { await update(ref(db, `telecomProviders/${id}`), { isActive: !current }); toast.success(t("admin2.updated")); }
+    catch { toast.error(t("admin2.error")); }
+  };
+
+  const startEditProvider = (p: TelecomProvider & { id: string }) => {
+    setEditingProviderId(p.id);
+    setProviderForm({
+      name: p.name, nameEn: p.nameEn || "", apiUrl: p.apiUrl, apiKey: p.apiKey || "",
+      method: p.method || "POST",
+      headers: JSON.stringify(p.headers || {}, null, 2),
+      bodyTemplate: typeof p.bodyTemplate === "string" ? p.bodyTemplate : JSON.stringify(p.bodyTemplate || {}, null, 2),
+      successField: p.responseMapping?.successField || "", messageField: p.responseMapping?.messageField || "",
+      transactionIdField: p.responseMapping?.transactionIdField || "",
+      balanceCheckUrl: p.balanceCheckUrl || "", isActive: p.isActive,
+    });
+    setExpandedProvider(p.id);
+  };
+
+  // ─── Telecom Network CRUD ────────────────────────────────────
+  const saveNetwork = async () => {
+    if (!networkForm.name) { toast.error(t("admin2.fillAllFields")); return; }
+    try {
+      const prefixes = networkForm.prefixes.split(",").map(p => p.trim()).filter(Boolean);
+      let subCategories: { id: string; name: string; nameEn: string; regionCode: string; isActive: boolean }[] = [];
+      try {
+        if (networkForm.subCategories) subCategories = JSON.parse(networkForm.subCategories);
+      } catch { /* ignore */ }
+      const data = {
+        name: networkForm.name.trim(), nameEn: networkForm.nameEn.trim(),
+        color: networkForm.color, bgColor: networkForm.bgColor, icon: networkForm.icon,
+        prefixes, isActive: networkForm.isActive, providerId: networkForm.providerId || null,
+        subCategories, createdAt: Date.now(),
+      };
+      if (editingNetworkId) {
+        await update(ref(db, `telecomNetworks/${editingNetworkId}`), data);
+        toast.success(t("admin2.updated"));
+      } else {
+        const netRef = push(ref(db, "telecomNetworks"));
+        await set(netRef, { ...data, id: netRef.key });
+        toast.success(t("admin2.added"));
+      }
+      setEditingNetworkId(null);
+      setNetworkForm({ name: "", nameEn: "", color: "#1B7A3D", bgColor: "#E8F5E9", icon: "📱", prefixes: "", isActive: true, providerId: "", subCategories: "" });
+    } catch { toast.error(t("admin2.error")); }
+  };
+
+  const deleteTelecomNetwork = async (id: string) => {
+    if (deleteConfirm === `tnet-${id}`) {
+      try { await remove(ref(db, `telecomNetworks/${id}`)); toast.success(t("admin2.deleted")); setDeleteConfirm(null); }
+      catch { toast.error(t("admin2.error")); }
+    } else { setDeleteConfirm(`tnet-${id}`); setTimeout(() => setDeleteConfirm(null), 3000); }
+  };
+
+  const toggleTelecomNetworkActive = async (id: string, current: boolean) => {
+    try { await update(ref(db, `telecomNetworks/${id}`), { isActive: !current }); toast.success(t("admin2.updated")); }
+    catch { toast.error(t("admin2.error")); }
+  };
+
+  const startEditNetwork = (n: TelecomNetwork & { id: string }) => {
+    setEditingNetworkId(n.id);
+    setNetworkForm({
+      name: n.name, nameEn: n.nameEn || "", color: n.color || "#1B7A3D",
+      bgColor: n.bgColor || "#E8F5E9", icon: n.icon || "📱",
+      prefixes: (n.prefixes || []).join(", "), isActive: n.isActive,
+      providerId: n.providerId || "",
+      subCategories: JSON.stringify(n.subCategories || [], null, 2),
+    });
+    setExpandedNetwork(n.id);
+  };
+
+  // ─── Telecom Package CRUD ────────────────────────────────────
+  const savePkg = async () => {
+    if (!pkgForm.name || !pkgForm.price || !pkgForm.networkId) { toast.error(t("admin2.fillAllFields")); return; }
+    try {
+      const data = {
+        name: pkgForm.name.trim(), nameEn: pkgForm.nameEn.trim(),
+        price: Number(pkgForm.price), wholesalePrice: Number(pkgForm.wholesalePrice) || undefined,
+        description: pkgForm.description.trim(), descriptionEn: pkgForm.descriptionEn.trim(),
+        dataAmount: pkgForm.dataAmount.trim() || undefined,
+        duration: Number(pkgForm.duration) || undefined,
+        durationUnit: pkgForm.durationUnit || "day",
+        type: pkgForm.type, isActive: pkgForm.isActive,
+        subCategoryId: pkgForm.subCategoryId.trim() || undefined,
+        networkId: pkgForm.networkId, productCode: pkgForm.productCode.trim() || undefined,
+        createdAt: Date.now(),
+      };
+      if (editingPkgId) {
+        await update(ref(db, `telecomPackages/${pkgForm.networkId}/${editingPkgId}`), data);
+        toast.success(t("admin2.updated"));
+      } else {
+        const pkgRef = push(ref(db, `telecomPackages/${pkgForm.networkId}`));
+        await set(pkgRef, { ...data, id: pkgRef.key });
+        toast.success(t("admin2.added"));
+      }
+      setEditingPkgId(null);
+      setPkgForm({ name: "", nameEn: "", price: "", wholesalePrice: "", description: "", descriptionEn: "", dataAmount: "", duration: "", durationUnit: "day", type: "recharge", isActive: true, subCategoryId: "", productCode: "", networkId: "" });
+    } catch { toast.error(t("admin2.error")); }
+  };
+
+  const deletePkg = async (networkId: string, id: string) => {
+    if (deleteConfirm === `tpkg-${id}`) {
+      try { await remove(ref(db, `telecomPackages/${networkId}/${id}`)); toast.success(t("admin2.deleted")); setDeleteConfirm(null); }
+      catch { toast.error(t("admin2.error")); }
+    } else { setDeleteConfirm(`tpkg-${id}`); setTimeout(() => setDeleteConfirm(null), 3000); }
+  };
+
+  const togglePkgActive = async (networkId: string, id: string, current: boolean) => {
+    try { await update(ref(db, `telecomPackages/${networkId}/${id}`), { isActive: !current }); toast.success(t("admin2.updated")); }
+    catch { toast.error(t("admin2.error")); }
+  };
+
+  const startEditPkg = (p: TelecomPackage & { id: string; networkId: string }) => {
+    setEditingPkgId(p.id);
+    setPkgForm({
+      name: p.name, nameEn: p.nameEn || "", price: String(p.price),
+      wholesalePrice: p.wholesalePrice ? String(p.wholesalePrice) : "",
+      description: p.description || "", descriptionEn: p.descriptionEn || "",
+      dataAmount: p.dataAmount || "", duration: p.duration ? String(p.duration) : "",
+      durationUnit: p.durationUnit || "day", type: p.type || "recharge",
+      isActive: p.isActive, subCategoryId: p.subCategoryId || "",
+      productCode: p.productCode || "", networkId: p.networkId,
+    });
   };
 
   // SIM CRUD
@@ -2578,6 +2791,363 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
                       <Button size="sm" variant="ghost" onClick={() => deleteBank(b.id)} className={`h-7 w-7 p-0 ${deleteConfirm === `bank-${b.id}` ? "text-red-500" : "text-gray-300"}`}><Trash2 className="w-3 h-3" /></Button>
                     </div>
                   ))}
+                </div>
+              </motion.div>
+            )}
+
+            {/* ═══ TAB: مزودين API ═══ */}
+            {activeTab === "telecomProviders" && (
+              <motion.div key="telecomProviders" variants={sectionVariants} initial="initial" animate="animate" exit="exit" transition={iOSSpring.gentle} className="space-y-4">
+                {/* Add/Edit Provider Form */}
+                <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                  <div className="p-4 border-b border-gray-50">
+                    <h3 className="text-sm font-bold text-[#1B7A3D] flex items-center gap-2">
+                      {editingProviderId ? <Pencil className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                      {editingProviderId ? "تعديل المزود" : "إضافة مزود API"}
+                    </h3>
+                  </div>
+                  <div className="p-4 space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <Input value={providerForm.name} onChange={e => setProviderForm(f => ({ ...f, name: e.target.value }))} placeholder="الاسم (عربي)" className="bg-gray-50 border-gray-200 rounded-xl" />
+                      <Input value={providerForm.nameEn} onChange={e => setProviderForm(f => ({ ...f, nameEn: e.target.value }))} placeholder="Name (English)" className="bg-gray-50 border-gray-200 rounded-xl" dir="ltr" />
+                    </div>
+                    <Input value={providerForm.apiUrl} onChange={e => setProviderForm(f => ({ ...f, apiUrl: e.target.value }))} placeholder="API URL" className="bg-gray-50 border-gray-200 rounded-xl" dir="ltr" />
+                    <div className="grid grid-cols-2 gap-3">
+                      <Input value={providerForm.apiKey} onChange={e => setProviderForm(f => ({ ...f, apiKey: e.target.value }))} placeholder="API Key" className="bg-gray-50 border-gray-200 rounded-xl" dir="ltr" />
+                      <select value={providerForm.method} onChange={e => setProviderForm(f => ({ ...f, method: e.target.value as "POST" | "GET" }))} className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm">
+                        <option value="POST">POST</option>
+                        <option value="GET">GET</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-500 mb-1 block">Headers (JSON)</label>
+                      <textarea value={providerForm.headers} onChange={e => setProviderForm(f => ({ ...f, headers: e.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-2 text-xs font-mono" dir="ltr" rows={3} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-500 mb-1 block">Body Template (JSON)</label>
+                      <textarea value={providerForm.bodyTemplate} onChange={e => setProviderForm(f => ({ ...f, bodyTemplate: e.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-2 text-xs font-mono" dir="ltr" rows={4} />
+                      <div className="mt-1 p-2 bg-[#E8F5E9] rounded-lg">
+                        <p className="text-[9px] font-bold text-[#1B7A3D] mb-1">المتغيرات المتاحة:</p>
+                        <div className="flex flex-wrap gap-1">
+                          {["{{phoneNumber}}", "{{packageId}}", "{{amount}}", "{{transactionId}}"].map(v => (
+                            <span key={v} className="bg-white text-[9px] font-mono text-gray-700 px-1.5 py-0.5 rounded">{v}</span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                      <Input value={providerForm.successField} onChange={e => setProviderForm(f => ({ ...f, successField: e.target.value }))} placeholder="Success Field" className="bg-gray-50 border-gray-200 rounded-xl" dir="ltr" />
+                      <Input value={providerForm.messageField} onChange={e => setProviderForm(f => ({ ...f, messageField: e.target.value }))} placeholder="Message Field" className="bg-gray-50 border-gray-200 rounded-xl" dir="ltr" />
+                      <Input value={providerForm.transactionIdField} onChange={e => setProviderForm(f => ({ ...f, transactionIdField: e.target.value }))} placeholder="Transaction ID Field" className="bg-gray-50 border-gray-200 rounded-xl" dir="ltr" />
+                    </div>
+                    <Input value={providerForm.balanceCheckUrl} onChange={e => setProviderForm(f => ({ ...f, balanceCheckUrl: e.target.value }))} placeholder="Balance Check URL (اختياري)" className="bg-gray-50 border-gray-200 rounded-xl" dir="ltr" />
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setProviderForm(f => ({ ...f, isActive: !f.isActive }))} className={`w-10 h-6 rounded-full transition-colors ${providerForm.isActive ? "bg-[#1B7A3D]" : "bg-gray-200"} relative`}>
+                        <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${providerForm.isActive ? "right-0.5" : "right-[18px]"}`} />
+                      </button>
+                      <span className="text-[10px] font-bold text-gray-500">{providerForm.isActive ? "نشط" : "غير نشط"}</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button onClick={saveProvider} className="flex-1 bg-[#1B7A3D] hover:bg-[#165E30] text-white font-bold rounded-xl">
+                        <Save className="w-4 h-4 ml-1" />{editingProviderId ? "تحديث" : "إضافة"}
+                      </Button>
+                      {editingProviderId && (
+                        <Button onClick={() => { setEditingProviderId(null); setProviderForm({ name: "", nameEn: "", apiUrl: "", apiKey: "", method: "POST", headers: "{}", bodyTemplate: "{}", successField: "", messageField: "", transactionIdField: "", balanceCheckUrl: "", isActive: true }); }} variant="outline" className="rounded-xl">إلغاء</Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Providers List */}
+                <div className="space-y-2">
+                  {telecomProvidersList.map(p => (
+                    <div key={p.id} className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                      <div className="p-4 flex items-center justify-between cursor-pointer" onClick={() => setExpandedProvider(expandedProvider === p.id ? null : p.id)}>
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-xl bg-[#E8F5E9] flex items-center justify-center"><Globe className="w-5 h-5 text-[#1B7A3D]" /></div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <p className="text-sm font-bold text-gray-900">{p.name}</p>
+                              <Badge className={`text-[8px] px-1.5 py-0 ${p.isActive ? "bg-[#E8F5E9] text-[#1B7A3D]" : "bg-gray-100 text-gray-500"}`}>{p.isActive ? "نشط" : "غير نشط"}</Badge>
+                            </div>
+                            <p className="text-[9px] text-gray-400 truncate max-w-[200px]" dir="ltr">{p.apiUrl}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); toast("سيتم اختبار الاتصال"); }} className="h-7 w-7 p-0 text-gray-400"><Signal className="w-3 h-3" /></Button>
+                          <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${expandedProvider === p.id ? "rotate-180" : ""}`} />
+                        </div>
+                      </div>
+                      {expandedProvider === p.id && (
+                        <div className="px-4 pb-4 space-y-2 border-t border-gray-50 pt-3">
+                          <div className="grid grid-cols-2 gap-2 text-[9px]">
+                            <div><span className="text-gray-400">الاسم EN:</span> <span className="font-bold">{p.nameEn || "—"}</span></div>
+                            <div><span className="text-gray-400">الطريقة:</span> <span className="font-bold">{p.method}</span></div>
+                            <div><span className="text-gray-400">API Key:</span> <span className="font-mono" dir="ltr">{p.apiKey ? `${p.apiKey.slice(0, 8)}...` : "—"}</span></div>
+                            <div><span className="text-gray-400">رصيد:</span> <span className="font-mono" dir="ltr">{p.balanceCheckUrl || "—"}</span></div>
+                          </div>
+                          {p.responseMapping && (
+                            <div className="p-2 bg-gray-50 rounded-xl text-[9px]">
+                              <p className="font-bold text-gray-500 mb-1">Response Mapping:</p>
+                              <div className="grid grid-cols-3 gap-1 font-mono" dir="ltr">
+                                <span>success: {p.responseMapping.successField || "—"}</span>
+                                <span>msg: {p.responseMapping.messageField || "—"}</span>
+                                <span>txId: {p.responseMapping.transactionIdField || "—"}</span>
+                              </div>
+                            </div>
+                          )}
+                          <div className="flex gap-2">
+                            <Button size="sm" onClick={() => startEditProvider(p)} className="bg-[#1B7A3D] text-white rounded-xl text-xs h-8"><Pencil className="w-3 h-3 ml-1" />تعديل</Button>
+                            <Button size="sm" onClick={() => toggleProviderActive(p.id, p.isActive)} variant="outline" className="rounded-xl text-xs h-8">{p.isActive ? "تعطيل" : "تفعيل"}</Button>
+                            <Button size="sm" variant="ghost" onClick={() => deleteProvider(p.id)} className={`h-8 ${deleteConfirm === `tprov-${p.id}` ? "text-red-500" : "text-gray-300"}`}><Trash2 className="w-3 h-3" /></Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {telecomProvidersList.length === 0 && (
+                    <div className="text-center py-8 text-gray-400"><Globe className="w-10 h-10 mx-auto mb-2 opacity-30" /><p className="text-xs">لا يوجد مزودين API</p></div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+
+            {/* ═══ TAB: شبكات الاتصالات ═══ */}
+            {activeTab === "telecomNetworks" && (
+              <motion.div key="telecomNetworks" variants={sectionVariants} initial="initial" animate="animate" exit="exit" transition={iOSSpring.gentle} className="space-y-4">
+                {/* Add/Edit Network Form */}
+                <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                  <div className="p-4 border-b border-gray-50">
+                    <h3 className="text-sm font-bold text-[#1B7A3D] flex items-center gap-2">
+                      {editingNetworkId ? <Pencil className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                      {editingNetworkId ? "تعديل الشبكة" : "إضافة شبكة اتصالات"}
+                    </h3>
+                  </div>
+                  <div className="p-4 space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <Input value={networkForm.name} onChange={e => setNetworkForm(f => ({ ...f, name: e.target.value }))} placeholder="الاسم (عربي)" className="bg-gray-50 border-gray-200 rounded-xl" />
+                      <Input value={networkForm.nameEn} onChange={e => setNetworkForm(f => ({ ...f, nameEn: e.target.value }))} placeholder="Name (English)" className="bg-gray-50 border-gray-200 rounded-xl" dir="ltr" />
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-500 mb-1 block">اللون</label>
+                        <input type="color" value={networkForm.color} onChange={e => setNetworkForm(f => ({ ...f, color: e.target.value }))} className="w-full h-9 rounded-xl cursor-pointer" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-500 mb-1 block">لون الخلفية</label>
+                        <input type="color" value={networkForm.bgColor} onChange={e => setNetworkForm(f => ({ ...f, bgColor: e.target.value }))} className="w-full h-9 rounded-xl cursor-pointer" />
+                      </div>
+                      <Input value={networkForm.icon} onChange={e => setNetworkForm(f => ({ ...f, icon: e.target.value }))} placeholder="📱 أيقونة" className="bg-gray-50 border-gray-200 rounded-xl" />
+                    </div>
+                    <Input value={networkForm.prefixes} onChange={e => setNetworkForm(f => ({ ...f, prefixes: e.target.value }))} placeholder="الأرقام البادئة (مفصولة بفواصل): 777, 773" className="bg-gray-50 border-gray-200 rounded-xl" dir="ltr" />
+                    <select value={networkForm.providerId} onChange={e => setNetworkForm(f => ({ ...f, providerId: e.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm">
+                      <option value="">— اختر مزود API —</option>
+                      {telecomProvidersList.filter(p => p.isActive).map(p => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-500 mb-1 block">الفئات الفرعية (JSON)</label>
+                      <textarea value={networkForm.subCategories} onChange={e => setNetworkForm(f => ({ ...f, subCategories: e.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-xl p-2 text-xs font-mono" dir="ltr" rows={3} placeholder='[{"id":"1","name":"سبافون جنوب","nameEn":"Sabafon South","regionCode":"south","isActive":true}]' />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setNetworkForm(f => ({ ...f, isActive: !f.isActive }))} className={`w-10 h-6 rounded-full transition-colors ${networkForm.isActive ? "bg-[#1B7A3D]" : "bg-gray-200"} relative`}>
+                        <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${networkForm.isActive ? "right-0.5" : "right-[18px]"}`} />
+                      </button>
+                      <span className="text-[10px] font-bold text-gray-500">{networkForm.isActive ? "نشط" : "غير نشط"}</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button onClick={saveNetwork} className="flex-1 bg-[#1B7A3D] hover:bg-[#165E30] text-white font-bold rounded-xl">
+                        <Save className="w-4 h-4 ml-1" />{editingNetworkId ? "تحديث" : "إضافة"}
+                      </Button>
+                      {editingNetworkId && (
+                        <Button onClick={() => { setEditingNetworkId(null); setNetworkForm({ name: "", nameEn: "", color: "#1B7A3D", bgColor: "#E8F5E9", icon: "📱", prefixes: "", isActive: true, providerId: "", subCategories: "" }); }} variant="outline" className="rounded-xl">إلغاء</Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Networks List */}
+                <div className="space-y-2">
+                  {telecomNetworksList.map(n => (
+                    <div key={n.id} className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                      <div className="p-4 flex items-center justify-between cursor-pointer" onClick={() => setExpandedNetwork(expandedNetwork === n.id ? null : n.id)}>
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-xl flex items-center justify-center text-lg" style={{ backgroundColor: n.bgColor || "#E8F5E9" }}>{n.icon || "📱"}</div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <p className="text-sm font-bold text-gray-900">{n.name}</p>
+                              <Badge className={`text-[8px] px-1.5 py-0 ${n.isActive ? "bg-[#E8F5E9] text-[#1B7A3D]" : "bg-gray-100 text-gray-500"}`}>{n.isActive ? "نشط" : "غير نشط"}</Badge>
+                            </div>
+                            <div className="flex items-center gap-2 text-[9px] text-gray-400">
+                              {n.providerId && telecomProviders[n.providerId] && <span>المزود: {telecomProviders[n.providerId].name}</span>}
+                              {n.prefixes && n.prefixes.length > 0 && <span dir="ltr">({n.prefixes.join(", ")})</span>}
+                            </div>
+                          </div>
+                        </div>
+                        <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${expandedNetwork === n.id ? "rotate-180" : ""}`} />
+                      </div>
+                      {expandedNetwork === n.id && (
+                        <div className="px-4 pb-4 space-y-2 border-t border-gray-50 pt-3">
+                          <div className="grid grid-cols-2 gap-2 text-[9px]">
+                            <div><span className="text-gray-400">الاسم EN:</span> <span className="font-bold">{n.nameEn || "—"}</span></div>
+                            <div><span className="text-gray-400">اللون:</span> <span className="inline-block w-3 h-3 rounded" style={{ backgroundColor: n.color }} /></div>
+                          </div>
+                          {n.subCategories && n.subCategories.length > 0 && (
+                            <div className="space-y-1">
+                              <p className="text-[9px] font-bold text-gray-500">الفئات الفرعية:</p>
+                              {n.subCategories.map((sc: { id: string; name: string; nameEn: string; regionCode: string; isActive: boolean }) => (
+                                <div key={sc.id} className="flex items-center justify-between p-2 bg-gray-50 rounded-xl">
+                                  <div>
+                                    <span className="text-xs font-bold text-gray-900">{sc.name}</span>
+                                    <span className="text-[9px] text-gray-400 mr-1">({sc.nameEn})</span>
+                                  </div>
+                                  <Badge className={`text-[8px] px-1.5 py-0 ${sc.isActive ? "bg-[#E8F5E9] text-[#1B7A3D]" : "bg-gray-100 text-gray-500"}`}>{sc.isActive ? "نشط" : "معطل"}</Badge>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          <div className="flex gap-2">
+                            <Button size="sm" onClick={() => startEditNetwork(n)} className="bg-[#1B7A3D] text-white rounded-xl text-xs h-8"><Pencil className="w-3 h-3 ml-1" />تعديل</Button>
+                            <Button size="sm" onClick={() => toggleTelecomNetworkActive(n.id, n.isActive)} variant="outline" className="rounded-xl text-xs h-8">{n.isActive ? "تعطيل" : "تفعيل"}</Button>
+                            <Button size="sm" variant="ghost" onClick={() => deleteTelecomNetwork(n.id)} className={`h-8 ${deleteConfirm === `tnet-${n.id}` ? "text-red-500" : "text-gray-300"}`}><Trash2 className="w-3 h-3" /></Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {telecomNetworksList.length === 0 && (
+                    <div className="text-center py-8 text-gray-400"><Smartphone className="w-10 h-10 mx-auto mb-2 opacity-30" /><p className="text-xs">لا توجد شبكات اتصالات</p></div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+
+            {/* ═══ TAB: باقات الاتصالات ═══ */}
+            {activeTab === "telecomPackages" && (
+              <motion.div key="telecomPackages" variants={sectionVariants} initial="initial" animate="animate" exit="exit" transition={iOSSpring.gentle} className="space-y-4">
+                {/* Filters */}
+                <div className="bg-white rounded-2xl border border-gray-100 p-4 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <select value={pkgFilterNetwork} onChange={e => { setPkgFilterNetwork(e.target.value); setPkgFilterSubCat("all"); }} className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm">
+                      <option value="all">كل الشبكات</option>
+                      {telecomNetworksList.map(n => <option key={n.id} value={n.id}>{n.icon} {n.name}</option>)}
+                    </select>
+                    <select value={pkgFilterSubCat} onChange={e => setPkgFilterSubCat(e.target.value)} className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm">
+                      <option value="all">كل الفئات الفرعية</option>
+                      {pkgFilterNetwork !== "all" && telecomNetworks[pkgFilterNetwork]?.subCategories?.map((sc: { id: string; name: string }) => (
+                        <option key={sc.id} value={sc.id}>{sc.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex gap-2">
+                    {["all", "recharge", "internet", "voice"].map(type => (
+                      <button key={type} onClick={() => setPkgFilterType(type)} className={`px-3 py-1.5 rounded-xl text-[10px] font-bold transition-colors ${pkgFilterType === type ? "bg-[#1B7A3D] text-white" : "bg-gray-100 text-gray-500"}`}>
+                        {type === "all" ? "الكل" : type === "recharge" ? "شحن" : type === "internet" ? "إنترنت" : "صوت"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Add/Edit Package Form */}
+                <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                  <div className="p-4 border-b border-gray-50">
+                    <h3 className="text-sm font-bold text-[#1B7A3D] flex items-center gap-2">
+                      {editingPkgId ? <Pencil className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                      {editingPkgId ? "تعديل الباقة" : "إضافة باقة"}
+                    </h3>
+                  </div>
+                  <div className="p-4 space-y-3">
+                    <select value={pkgForm.networkId} onChange={e => setPkgForm(f => ({ ...f, networkId: e.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm">
+                      <option value="">— اختر الشبكة —</option>
+                      {telecomNetworksList.map(n => <option key={n.id} value={n.id}>{n.icon} {n.name}</option>)}
+                    </select>
+                    <div className="grid grid-cols-2 gap-3">
+                      <Input value={pkgForm.name} onChange={e => setPkgForm(f => ({ ...f, name: e.target.value }))} placeholder="اسم الباقة (عربي)" className="bg-gray-50 border-gray-200 rounded-xl" />
+                      <Input value={pkgForm.nameEn} onChange={e => setPkgForm(f => ({ ...f, nameEn: e.target.value }))} placeholder="Package Name (EN)" className="bg-gray-50 border-gray-200 rounded-xl" dir="ltr" />
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                      <Input type="number" value={pkgForm.price} onChange={e => setPkgForm(f => ({ ...f, price: e.target.value }))} placeholder="السعر" className="bg-gray-50 border-gray-200 rounded-xl" />
+                      <Input type="number" value={pkgForm.wholesalePrice} onChange={e => setPkgForm(f => ({ ...f, wholesalePrice: e.target.value }))} placeholder="سعر الجملة" className="bg-gray-50 border-gray-200 rounded-xl" />
+                      <Input value={pkgForm.dataAmount} onChange={e => setPkgForm(f => ({ ...f, dataAmount: e.target.value }))} placeholder="كمية البيانات" className="bg-gray-50 border-gray-200 rounded-xl" />
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                      <Input type="number" value={pkgForm.duration} onChange={e => setPkgForm(f => ({ ...f, duration: e.target.value }))} placeholder="المدة" className="bg-gray-50 border-gray-200 rounded-xl" />
+                      <select value={pkgForm.durationUnit} onChange={e => setPkgForm(f => ({ ...f, durationUnit: e.target.value }))} className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm">
+                        <option value="day">يوم</option>
+                        <option value="week">أسبوع</option>
+                        <option value="month">شهر</option>
+                      </select>
+                      <select value={pkgForm.type} onChange={e => setPkgForm(f => ({ ...f, type: e.target.value as "recharge" | "internet" | "voice" }))} className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm">
+                        <option value="recharge">شحن</option>
+                        <option value="internet">إنترنت</option>
+                        <option value="voice">صوت</option>
+                      </select>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <Input value={pkgForm.description} onChange={e => setPkgForm(f => ({ ...f, description: e.target.value }))} placeholder="الوصف (عربي)" className="bg-gray-50 border-gray-200 rounded-xl" />
+                      <Input value={pkgForm.descriptionEn} onChange={e => setPkgForm(f => ({ ...f, descriptionEn: e.target.value }))} placeholder="Description (EN)" className="bg-gray-50 border-gray-200 rounded-xl" dir="ltr" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <Input value={pkgForm.subCategoryId} onChange={e => setPkgForm(f => ({ ...f, subCategoryId: e.target.value }))} placeholder="ID الفئة الفرعية" className="bg-gray-50 border-gray-200 rounded-xl" dir="ltr" />
+                      <Input value={pkgForm.productCode} onChange={e => setPkgForm(f => ({ ...f, productCode: e.target.value }))} placeholder="كود المنتج" className="bg-gray-50 border-gray-200 rounded-xl" dir="ltr" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setPkgForm(f => ({ ...f, isActive: !f.isActive }))} className={`w-10 h-6 rounded-full transition-colors ${pkgForm.isActive ? "bg-[#1B7A3D]" : "bg-gray-200"} relative`}>
+                        <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${pkgForm.isActive ? "right-0.5" : "right-[18px]"}`} />
+                      </button>
+                      <span className="text-[10px] font-bold text-gray-500">{pkgForm.isActive ? "نشط" : "غير نشط"}</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button onClick={savePkg} className="flex-1 bg-[#1B7A3D] hover:bg-[#165E30] text-white font-bold rounded-xl">
+                        <Save className="w-4 h-4 ml-1" />{editingPkgId ? "تحديث" : "إضافة"}
+                      </Button>
+                      {editingPkgId && (
+                        <Button onClick={() => { setEditingPkgId(null); setPkgForm({ name: "", nameEn: "", price: "", wholesalePrice: "", description: "", descriptionEn: "", dataAmount: "", duration: "", durationUnit: "day", type: "recharge", isActive: true, subCategoryId: "", productCode: "", networkId: "" }); }} variant="outline" className="rounded-xl">إلغاء</Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Packages List */}
+                <div className="space-y-2">
+                  {telecomPkgsFlat
+                    .filter(p => pkgFilterNetwork === "all" || p.networkId === pkgFilterNetwork)
+                    .filter(p => pkgFilterSubCat === "all" || p.subCategoryId === pkgFilterSubCat)
+                    .filter(p => pkgFilterType === "all" || p.type === pkgFilterType)
+                    .map(p => (
+                    <div key={`${p.networkId}-${p.id}`} className="bg-white rounded-2xl border border-gray-100 p-4 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="px-2 py-1 rounded-lg bg-[#E8F5E9]">
+                          <span className="text-xs font-bold text-[#1B7A3D]">{fmt(p.price)}</span>
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-bold text-gray-900">{p.name}</p>
+                            <Badge className={`text-[8px] px-1.5 py-0 ${p.type === "recharge" ? "bg-blue-50 text-blue-600" : p.type === "internet" ? "bg-purple-50 text-purple-600" : "bg-orange-50 text-orange-600"}`}>
+                              {p.type === "recharge" ? "شحن" : p.type === "internet" ? "إنترنت" : "صوت"}
+                            </Badge>
+                            {!p.isActive && <Badge className="text-[8px] px-1.5 py-0 bg-gray-100 text-gray-500">معطل</Badge>}
+                          </div>
+                          <div className="flex items-center gap-2 text-[9px] text-gray-400">
+                            {p.dataAmount && <span>{p.dataAmount}</span>}
+                            {p.duration && <span>{p.duration} {p.durationUnit === "day" ? "يوم" : p.durationUnit === "week" ? "أسبوع" : "شهر"}</span>}
+                            {telecomNetworks[p.networkId] && <span>• {telecomNetworks[p.networkId].name}</span>}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Button size="sm" variant="ghost" onClick={() => startEditPkg(p)} className="h-7 w-7 p-0 text-gray-400"><Pencil className="w-3 h-3" /></Button>
+                        <Button size="sm" variant="ghost" onClick={() => togglePkgActive(p.networkId, p.id, p.isActive)} className="h-7 w-7 p-0 text-gray-400">
+                          {p.isActive ? <ToggleRight className="w-3 h-3 text-[#1B7A3D]" /> : <ToggleLeft className="w-3 h-3" />}
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => deletePkg(p.networkId, p.id)} className={`h-7 w-7 p-0 ${deleteConfirm === `tpkg-${p.id}` ? "text-red-500" : "text-gray-300"}`}><Trash2 className="w-3 h-3" /></Button>
+                      </div>
+                    </div>
+                  ))}
+                  {telecomPkgsFlat.length === 0 && (
+                    <div className="text-center py-8 text-gray-400"><Package className="w-10 h-10 mx-auto mb-2 opacity-30" /><p className="text-xs">لا توجد باقات</p></div>
+                  )}
                 </div>
               </motion.div>
             )}
