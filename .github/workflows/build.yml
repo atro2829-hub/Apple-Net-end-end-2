@@ -48,7 +48,6 @@ jobs:
 
       - name: Build Next.js static export
         run: |
-          # Create export config
           cat > next.config.export.ts << 'EXPORTCONFIG'
           import type { NextConfig } from "next";
           const nextConfig: NextConfig = {
@@ -63,7 +62,6 @@ jobs:
           EXPORTCONFIG
           mv next.config.ts next.config.dev.ts
           mv next.config.export.ts next.config.ts
-          # Remove API routes (not needed for static export)
           rm -rf src/app/api
           bun run build
         env:
@@ -71,7 +69,6 @@ jobs:
 
       - name: Setup Capacitor for User App
         run: |
-          # Ensure user capacitor config
           cat > capacitor.config.ts << 'CAPCONFIG'
           import type { CapacitorConfig } from '@capacitor/cli';
           const config: CapacitorConfig = {
@@ -114,6 +111,11 @@ jobs:
           npx cap add android
           npx cap sync android
 
+      - name: Apply custom build.gradle with signing
+        run: |
+          # Replace generated build.gradle with our custom one that has signing + Firebase
+          sed 's/APP_NAMESPACE/com.applenet.app/g; s/APP_PACKAGE/com.applenet.app/g' scripts/android-app-build.gradle > android/app/build.gradle
+
       - name: Copy google-services.json
         run: |
           echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > android/app/google-services.json
@@ -137,7 +139,6 @@ jobs:
           cp "$ICON_DIR/mipmap-anydpi-v26/ic_launcher_round.xml" android/app/src/main/res/mipmap-anydpi-v26/ 2>/dev/null || true
           mkdir -p android/app/src/main/res/values
           cp "$ICON_DIR/ic_launcher_background.xml" android/app/src/main/res/values/ 2>/dev/null || true
-          # Splash screens
           SPLASH_DIR="public/splash"
           for density in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
             for orient in port land; do
@@ -153,7 +154,7 @@ jobs:
             cp "$SPLASH_DIR/splash-xxhdpi.png" android/app/src/main/res/drawable/splash.png
           fi
 
-      - name: Build User APK
+      - name: Build signed APK
         working-directory: android
         run: |
           chmod +x gradlew
@@ -223,7 +224,6 @@ jobs:
 
       - name: Build Next.js static export
         run: |
-          # Create export config
           cat > next.config.export.ts << 'EXPORTCONFIG'
           import type { NextConfig } from "next";
           const nextConfig: NextConfig = {
@@ -245,7 +245,6 @@ jobs:
 
       - name: Prepare admin web directory
         run: |
-          # Copy out/ to out-admin/ and replace index.html with redirect to /admin/
           rm -rf out-admin
           cp -r out out-admin
           cat > out-admin/index.html << 'REDIRECT'
@@ -264,7 +263,6 @@ jobs:
 
       - name: Setup Capacitor for Admin App
         run: |
-          # Admin capacitor config with out-admin webDir
           cat > capacitor.config.ts << 'CAPCONFIG'
           import type { CapacitorConfig } from '@capacitor/cli';
           const config: CapacitorConfig = {
@@ -306,13 +304,14 @@ jobs:
           npx cap add android
           npx cap sync android
 
-      - name: Set admin package name
+      - name: Apply custom build.gradle with signing + admin package
         run: |
-          # Replace package name from com.applenet.app to com.applenet.admin
+          sed 's/APP_NAMESPACE/com.applenet.admin/g; s/APP_PACKAGE/com.applenet.admin/g' scripts/android-app-build.gradle > android/app/build.gradle
+
+      - name: Set admin package name in other files
+        run: |
           find android -name "AndroidManifest.xml" -exec sed -i 's/com\.applenet\.app/com.applenet.admin/g' {} \;
-          find android -name "build.gradle" -exec sed -i 's/com\.applenet\.app/com.applenet.admin/g' {} \;
           find android -name "strings.xml" -exec sed -i 's/Apple\.NET/Apple.NET Admin/g' {} \;
-          # Move Java files to match admin package name
           mkdir -p android/app/src/main/java/com/applenet/admin
           if [ -f android/app/src/main/java/com/applenet/app/MainActivity.java ]; then
             sed 's/com\.applenet\.app/com.applenet.admin/g' android/app/src/main/java/com/applenet/app/MainActivity.java > android/app/src/main/java/com/applenet/admin/MainActivity.java
@@ -357,7 +356,7 @@ jobs:
             cp "$SPLASH_DIR/splash-xxhdpi.png" android/app/src/main/res/drawable/splash.png
           fi
 
-      - name: Build Admin APK
+      - name: Build signed APK
         working-directory: android
         run: |
           chmod +x gradlew
@@ -409,11 +408,18 @@ jobs:
             SHA1=$(grep "SHA1:" artifacts/sha-keys/sha-keys.txt | head -1 | sed 's/.*SHA1: //')
             SHA256=$(grep "SHA256:" artifacts/sha-keys/sha-keys.txt | head -1 | sed 's/.*SHA256: //')
           else
-            SHA1="See keystore"
-            SHA256="See keystore"
+            SHA1="C9:DA:33:A9:EF:88:69:F0:DA:94:CF:67:DF:C8:BA:8A:DA:A7:81:19"
+            SHA256="B9:E8:3F:28:40:92:40:FE:2E:D5:9D:9D:5A:50:7C:FD:FE:42:D5:A2:F7:8C:31:0F:C1:4B:87:27:63:D0:61:67"
           fi
           echo "sha1=$SHA1" >> $GITHUB_OUTPUT
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+
+      - name: Delete existing release if present
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
