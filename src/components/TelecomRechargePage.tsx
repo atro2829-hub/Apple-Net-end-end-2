@@ -394,27 +394,63 @@ export function TelecomRechargePage({ user, onAuthClick, onNavigate, onExecute }
     setIsProcessing(true);
 
     try {
-      // Call the server-side API for atomic balance deduction
-      const response = await fetch("/api/telecom/purchase", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      // Deduct from user's in-app balance via Firebase RTDB (atomic transaction)
+      // API only provides the service - balance is always from the app wallet
+      const balanceRef = ref(db, `credit/${user.uid}/amount`);
+      const newBalance = await runTransaction(balanceRef, (current) => {
+        if ((current || 0) < pkg.price) return; // abort transaction - insufficient balance
+        return (current || 0) - pkg.price;
+      });
+
+      if (newBalance.committed) {
+        // Add purchase history entry
+        const historyRef = push(ref(db, `credit/${user.uid}/history`));
+        await update(historyRef, {
+          type: "purchase",
+          amount: pkg.price,
+          description: `سداد اتصالات - ${activeNetwork?.name || ""} - ${pkg.name}`,
+          descriptionEn: `Telecom Payment - ${activeNetwork?.nameEn || ""} - ${pkg.nameEn}`,
+          timestamp: Date.now(),
+          phoneNumber: phoneNumber.replace(/\D/g, ""),
+          packageId: selectedPackage,
+          networkId: activeNetworkId,
+        });
+
+        // Create telecom order for admin to process
+        const orderRef = push(ref(db, "telecomOrders"));
+        await update(orderRef, {
           uid: user.uid,
           phoneNumber: phoneNumber.replace(/\D/g, ""),
           packageId: selectedPackage,
-          networkId: activeNetworkId || "",
+          networkId: activeNetworkId,
           amount: pkg.price,
-          networkName: activeNetwork ? (isAr ? activeNetwork.name : activeNetwork.nameEn) : "",
-          packageName: isAr ? pkg.name : pkg.nameEn,
-        }),
-      });
+          status: "pending",
+          createdAt: Date.now(),
+          packageName: pkg.name,
+          packageNameEn: pkg.nameEn,
+          networkName: activeNetwork?.name,
+          networkNameEn: activeNetwork?.nameEn,
+          userName: user.displayName || "",
+          userEmail: user.email || "",
+        });
 
-      const result = await response.json();
+        // Send notification to admin about new order
+        const adminNotifRef = push(ref(db, "adminNotifications"));
+        await update(adminNotifRef, {
+          type: "telecom_order",
+          title: "طلب سداد اتصالات جديد",
+          titleEn: "New Telecom Order",
+          body: `${user.displayName || "مستخدم"} - ${activeNetwork?.name || ""} - ${pkg.name} - ${pkg.price} ريال`,
+          bodyEn: `${user.displayName || "User"} - ${activeNetwork?.nameEn || ""} - ${pkg.nameEn} - ${pkg.price} YER`,
+          orderId: orderRef.key,
+          uid: user.uid,
+          timestamp: Date.now(),
+          read: false,
+        });
 
-      if (result.success) {
         toast.success(isAr ? "تم الشراء بنجاح! سيتم تنفيذ الطلب عبر مزود الخدمة" : "Purchase successful! Order will be processed by the provider");
 
-        // If onExecute prop is provided, call it to trigger API provider
+        // If onExecute prop is provided, call it to trigger external API provider
         if (onExecute) {
           onExecute({
             phoneNumber: phoneNumber.replace(/\D/g, ""),
@@ -426,55 +462,10 @@ export function TelecomRechargePage({ user, onAuthClick, onNavigate, onExecute }
 
         setSelectedPackage(null);
       } else {
-        toast.error(result.error || (isAr ? "فشل في عملية الشراء" : "Purchase failed"));
+        toast.error(isAr ? "رصيدك غير كافي" : "Insufficient balance");
       }
-    } catch (error) {
-      // Fallback: direct Firebase transaction if API is unavailable
-      try {
-        const balanceRef = ref(db, `credit/${user.uid}/amount`);
-        const newBalance = await runTransaction(balanceRef, (current) => {
-          if ((current || 0) < pkg.price) return; // abort transaction
-          return (current || 0) - pkg.price;
-        });
-
-        if (newBalance.committed) {
-          // Add history entry
-          const historyRef = push(ref(db, `credit/${user.uid}/history`));
-          await update(historyRef, {
-            type: "purchase",
-            amount: pkg.price,
-            description: `سداد اتصالات - ${activeNetwork?.name || ""} - ${pkg.name}`,
-            descriptionEn: `Telecom Payment - ${activeNetwork?.nameEn || ""} - ${pkg.nameEn}`,
-            timestamp: Date.now(),
-            phoneNumber: phoneNumber.replace(/\D/g, ""),
-            packageId: selectedPackage,
-            networkId: activeNetworkId,
-          });
-
-          // Create telecom order
-          const orderRef = push(ref(db, "telecomOrders"));
-          await update(orderRef, {
-            uid: user.uid,
-            phoneNumber: phoneNumber.replace(/\D/g, ""),
-            packageId: selectedPackage,
-            networkId: activeNetworkId,
-            amount: pkg.price,
-            status: "pending",
-            createdAt: Date.now(),
-            packageName: pkg.name,
-            packageNameEn: pkg.nameEn,
-            networkName: activeNetwork?.name,
-            networkNameEn: activeNetwork?.nameEn,
-          });
-
-          toast.success(isAr ? "تم الشراء بنجاح!" : "Purchase successful!");
-          setSelectedPackage(null);
-        } else {
-          toast.error(isAr ? "رصيدك غير كافي" : "Insufficient balance");
-        }
-      } catch {
-        toast.error(isAr ? "حدث خطأ، حاول مرة أخرى" : "An error occurred, try again");
-      }
+    } catch {
+      toast.error(isAr ? "حدث خطأ، حاول مرة أخرى" : "An error occurred, try again");
     } finally {
       setIsProcessing(false);
     }
